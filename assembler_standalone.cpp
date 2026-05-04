@@ -1,12 +1,9 @@
 /*
- * HelixForge — Genome Assembler (standalone, no external dependencies)
+ * HelixForge — Genome Assembler 
  * DAA Modules: Rolling Hash, Bloom Filter, De Bruijn Graph,
  *              Hierholzer Eulerian Traversal, DP Error Correction
- *
  * Compile:
  *   g++ -O2 -std=c++17 -o assembler assembler_standalone.cpp
- * Usage:
- *   ./assembler <input.fastq> <k> <output_dir>
  */
 
 #include <iostream>
@@ -24,20 +21,22 @@
 using namespace std;
 using namespace chrono;
 
-/* ─────────────────────────────────────────────
+/*
    TIMING
-   ───────────────────────────────────────────── */
+*/
 struct Timer {
     time_point<high_resolution_clock> t0;
-    void start() { t0 = high_resolution_clock::now(); }
+    void start() { 
+       t0 = high_resolution_clock::now(); 
+    }
     double ms() const {
         return duration<double, milli>(high_resolution_clock::now() - t0).count();
     }
 };
 
-/* ─────────────────────────────────────────────
+/*  
    ROLLING HASH — Rabin-Karp  O(1) per k-mer
-   ───────────────────────────────────────────── */
+     */
 class RollingHash {
     static constexpr uint64_t BASE = 5;
     static constexpr uint64_t MOD  = (1ULL << 61) - 1;
@@ -45,7 +44,15 @@ class RollingHash {
     int k;
 
     static uint64_t cv(char c) {
-        switch(c){case 'A':return 1;case 'C':return 2;case 'G':return 3;case 'T':return 4;}
+        switch(c){
+           case 'A':
+              return 1;
+           case 'C':
+              return 2;
+           case 'G':
+              return 3;
+           case 'T':
+              return 4;}
         return 1;
     }
     static uint64_t mm(uint64_t a, uint64_t b) {
@@ -65,12 +72,14 @@ public:
         hv = (hv + MOD - mm(bp, cv(old_c))) % MOD;
         hv = (mm(hv, BASE) + cv(new_c)) % MOD;
     }
-    uint64_t value() const { return hv; }
+    uint64_t value() const { 
+       return hv;
+    }
 };
 
-/* ─────────────────────────────────────────────
+/*  
    BLOOM FILTER — O(1) insert/query, ~8MB
-   ───────────────────────────────────────────── */
+     */
 class BloomFilter {
     static constexpr size_t BITS = 1ULL << 26;
     vector<uint8_t> b;
@@ -91,10 +100,10 @@ public:
     }
 };
 
-/* ─────────────────────────────────────────────
+/*  
    DE BRUIJN GRAPH — adjacency list
    Node = (k-1)-mer, Edge = k-mer
-   ───────────────────────────────────────────── */
+     */
 struct Graph {
     unordered_map<string, vector<string>> adj;
     unordered_map<string, int> indeg, outdeg;
@@ -105,15 +114,17 @@ struct Graph {
         indeg[v]++;
         if (!indeg.count(u))  indeg[u]  = 0;
         if (!outdeg.count(v)) outdeg[v] = 0;
-        if (!adj.count(v))    adj[v];   // ensure v exists
+        if (!adj.count(v))    adj[v];
     }
 
     string start_node() const {
         string best;
         for (auto& [n, od] : outdeg) {
             int id = indeg.count(n) ? indeg.at(n) : 0;
-            if (od - id == 1) return n;
-            if (best.empty() && od > 0) best = n;
+            if (od - id == 1) 
+               return n;
+            if (best.empty() && od > 0) 
+               best = n;
         }
         return best;
     }
@@ -123,9 +134,10 @@ struct Graph {
     }
 };
 
-/* ─────────────────────────────────────────────
+/*  
    HIERHOLZER — Eulerian path  O(E)
-   ───────────────────────────────────────────── */
+     */
+
 vector<string> hierholzer(Graph& g) {
     string s = g.start_node();
     if (s.empty()) return {};
@@ -140,16 +152,19 @@ vector<string> hierholzer(Graph& g) {
     while (!stk.empty()) {
         string v = stk.top();
         auto& nb = g.adj[v];
-        if (idx[v] < (int)nb.size()) stk.push(nb[idx[v]++]);
-        else { circuit.push_back(v); stk.pop(); }
+        if (idx[v] < (int)nb.size()) 
+           stk.push(nb[idx[v]++]);
+        else { 
+           circuit.push_back(v); stk.pop(); 
+        }
     }
     reverse(circuit.begin(), circuit.end());
     return circuit;
 }
 
-/* ─────────────────────────────────────────────
+/*  
    GREEDY FALLBACK
-   ───────────────────────────────────────────── */
+     */
 string greedy_assemble(Graph& g) {
     string cur = g.start_node();
     if (cur.empty()) return "";
@@ -166,21 +181,20 @@ string greedy_assemble(Graph& g) {
     return res;
 }
 
-/* ─────────────────────────────────────────────
+/*  
    DP ERROR CORRECTION — LCS sliding window
    O(n*m) per window pair
-   ───────────────────────────────────────────── */
+     */
 string dp_correct(const string& seq, int win=60) {
     // Simplified: compute LCS between adjacent windows to detect inconsistency
     // In a production system, inconsistent windows would trigger re-assembly
     if ((int)seq.size() < win*2) return seq;
-    // For demonstration: return sequence (correction preserves valid assemblies)
     return seq;
 }
 
-/* ─────────────────────────────────────────────
+/*  
    FASTQ STREAMING READER — O(N)
-   ───────────────────────────────────────────── */
+     */
 vector<string> read_fastq(const string& path, long long& nr) {
     ifstream f(path);
     if (!f) { cerr<<"Cannot open "<<path<<"\n"; return {}; }
@@ -202,9 +216,9 @@ vector<string> read_fastq(const string& path, long long& nr) {
     return reads;
 }
 
-/* ─────────────────────────────────────────────
+/*  
    JSON WRITER (manual, no deps)
-   ───────────────────────────────────────────── */
+     */
 string escape_json(const string& s) {
     string o; o.reserve(s.size()+2);
     o+='"';
@@ -253,9 +267,9 @@ void write_graph_json(const string& path, const Graph& g) {
     f << "  \"total_edges\": " << g.E() << "\n}\n";
 }
 
-/* ─────────────────────────────────────────────
+/*  
    MAIN
-   ───────────────────────────────────────────── */
+     */
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         cerr << "Usage: assembler <input.fastq> <k> <output_dir>\n";

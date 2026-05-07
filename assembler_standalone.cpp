@@ -582,11 +582,9 @@ string escape_json(const string& s) {
 // can highlight the assembly backbone in a distinct colour.
 void write_graph_json(const string& path, const Graph& g,
                       const string& seq, int k) {
-    const int MAX_BRANCH = 60,   // max branch nodes shown (path-adjacent only)
-              MAX_EXTRA  = 40,   // max tip/other neighbours of path nodes
-              MAX_EDGES  = 2000;
+    const int MAX_NODES = 400, MAX_EDGES = 3000;
 
-    // ── 1. Extract assembly path nodes in strict sequence order ──────────
+    // ── 1. Extract assembly path nodes in sequence order ──────────────────
     vector<string> path_ordered;
     unordered_set<string> path_set;
     if (!seq.empty() && (int)seq.size() >= k - 1) {
@@ -599,21 +597,16 @@ void write_graph_json(const string& path, const Graph& g,
         }
     }
 
-    // ── 2. Identify branch nodes directly adjacent to path ────────────────
-    //    Only show branches that touch the assembled backbone — random
-    //    branch nodes elsewhere just add unanchored orange clutter.
-    unordered_set<string> path_adj;   // neighbours of path nodes
-    for (auto& pn : path_ordered) {
-        if (!g.adj.count(pn)) continue;
-        for (auto& nb : g.adj.at(pn))
-            if (!path_set.count(nb)) path_adj.insert(nb);
+    // ── 2. Identify branch nodes (combined degree > 2) ────────────────────
+    unordered_set<string> branch_set;
+    for (auto& [n, od] : g.outdeg) {
+        int id = g.indeg.count(n) ? g.indeg.at(n) : 0;
+        if (od + id > 2) branch_set.insert(n);
     }
 
-    // ── 3. Build ordered node list: path → path-adjacent branches → tips ──
+    // ── 3. Build selected node map with roles ─────────────────────────────
     unordered_map<string, string> node_role;
     unordered_map<string, int>    node_cov;
-    // We use a vector to preserve path ordering (unordered_map loses it)
-    vector<string> node_list;
 
     auto add_node = [&](const string& n, const string& role) {
         if (node_role.count(n) || !g.adj.count(n)) return;
@@ -624,42 +617,37 @@ void write_graph_json(const string& path, const Graph& g,
             cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
         }
         node_cov[n] = cov;
-        node_list.push_back(n);
     };
 
-    // Priority 1 — path nodes in sequence order (these drive the helix layout)
-    for (auto& n : path_ordered) add_node(n, "path");
+    for (auto& n : path_ordered) { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "path"); }
+    for (auto& n : branch_set)   { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "branch"); }
 
-    // Priority 2 — high-coverage path-adjacent branch nodes (capped at MAX_BRANCH)
-    vector<pair<int,string>> branch_cands;
-    for (auto& n : path_adj) {
-        int od = g.outdeg.count(n) ? g.outdeg.at(n) : 0;
-        int id = g.indeg.count(n)  ? g.indeg.at(n)  : 0;
-        if (od + id > 2) {
-            int cov = 0;
-            for (auto& nb : g.adj.at(n)) {
-                string key = n + "->" + nb;
-                cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
-            }
-            branch_cands.push_back({cov, n});
+    // Immediate neighbours of path nodes
+    for (auto& n : path_ordered) {
+        if ((int)node_role.size() >= MAX_NODES) break;
+        if (!g.adj.count(n)) continue;
+        for (auto& nb : g.adj.at(n)) {
+            if ((int)node_role.size() >= MAX_NODES) break;
+            int od = g.outdeg.count(nb) ? g.outdeg.at(nb) : 0;
+            add_node(nb, od == 0 ? "tip" : "other");
         }
     }
-    sort(branch_cands.rbegin(), branch_cands.rend());
-    int bc = 0;
-    for (auto& [cov, n] : branch_cands) {
-        if (bc++ >= MAX_BRANCH) break;
-        add_node(n, "branch");
-    }
 
-    // Priority 3 — remaining path-adjacent non-branch nodes (tips/others, capped)
-    int ec = 0;
-    for (auto& n : path_adj) {
-        if (ec >= MAX_EXTRA) break;
-        int od = g.outdeg.count(n) ? g.outdeg.at(n) : 0;
-        if (od + g.indeg.count(n) ? g.indeg.at(n) : 0 <= 2) {
-            add_node(n, od == 0 ? "tip" : "other");
-            ec++;
+    // Fill remaining with highest-coverage nodes
+    vector<pair<int,string>> cov_fill;
+    for (auto& [n, _] : g.adj) {
+        if (node_role.count(n)) continue;
+        int cov = 0;
+        for (auto& nb : g.adj.at(n)) {
+            string key = n + "->" + nb;
+            cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
         }
+        cov_fill.push_back({cov, n});
+    }
+    sort(cov_fill.rbegin(), cov_fill.rend());
+    for (auto& [cov, n] : cov_fill) {
+        if ((int)node_role.size() >= MAX_NODES) break;
+        add_node(n, "other");
     }
 
     // ── 4. Collect edges between selected nodes ───────────────────────────
@@ -669,7 +657,7 @@ void write_graph_json(const string& path, const Graph& g,
 
     struct SelEdge { string u, v; int w; bool on_path; };
     vector<SelEdge> sel_edges;
-    for (auto& n : node_list) {
+    for (auto& [n, role] : node_role) {
         if (!g.adj.count(n)) continue;
         for (auto& nb : g.adj.at(n)) {
             if (!node_role.count(nb)) continue;
@@ -681,14 +669,14 @@ void write_graph_json(const string& path, const Graph& g,
     }
     done_collecting:;
 
-    // ── 5. Write JSON — path nodes first (preserves helix order) ─────────
+    // ── 5. Write JSON ─────────────────────────────────────────────────────
     ofstream f(path);
     f << "{\n  \"nodes\": [\n";
     bool first = true;
-    for (auto& n : node_list) {
+    for (auto& [n, role] : node_role) {
         if (!first) f << ",\n";
         f << "    {\"id\":"      << escape_json(n)
-          << ",\"role\":"        << escape_json(node_role[n])
+          << ",\"role\":"        << escape_json(role)
           << ",\"coverage\":"    << node_cov[n] << "}";
         first = false;
     }
@@ -703,9 +691,9 @@ void write_graph_json(const string& path, const Graph& g,
         first = false;
     }
     f << "\n  ],\n";
-    f << "  \"total_nodes\": "     << g.V()               << ",\n";
-    f << "  \"total_edges\": "     << g.E()               << ",\n";
-    f << "  \"path_node_count\": " << path_ordered.size() << "\n}\n";
+    f << "  \"total_nodes\": "      << g.V()               << ",\n";
+    f << "  \"total_edges\": "      << g.E()               << ",\n";
+    f << "  \"path_node_count\": "  << path_ordered.size() << "\n}\n";
 }
 
 /*  

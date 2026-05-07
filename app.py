@@ -572,27 +572,26 @@ def parse_repeats(path: Path) -> list[dict]:
 
 
 def build_3d_graph(graph_path: Path, max_nodes: int):
-    import math, numpy as np
     gdata = json.loads(graph_path.read_text())
     raw_nodes = gdata["nodes"][:max_nodes]
 
-    # Support old format (list of strings) and new format (list of dicts)
+    # Support old format (list of strings) and new format (list of dicts with role/coverage)
     if raw_nodes and isinstance(raw_nodes[0], dict):
-        nodes     = [n["id"]                          for n in raw_nodes]
-        roles     = {n["id"]: n.get("role",     "other") for n in raw_nodes}
-        coverages = {n["id"]: n.get("coverage",  1)       for n in raw_nodes}
+        nodes    = [n["id"]               for n in raw_nodes]
+        roles    = {n["id"]: n.get("role",     "other") for n in raw_nodes}
+        coverages= {n["id"]: n.get("coverage", 1)       for n in raw_nodes}
     else:
-        nodes     = raw_nodes
-        roles     = {n: "other" for n in nodes}
-        coverages = {n: 1       for n in nodes}
+        nodes    = raw_nodes
+        roles    = {n: "other" for n in nodes}
+        coverages= {n: 1       for n in nodes}
 
-    # Path nodes appear first in JSON (written in sequence order by C++)
-    path_nodes = [n for n in nodes if roles.get(n) == "path"]
-    other_nodes = [n for n in nodes if roles.get(n) != "path"]
     node_set = set(nodes)
 
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
     edge_weights = {}
     path_edges   = set()
+
     for edge in gdata["edges"]:
         if isinstance(edge, list):
             u, v, w, on_path = edge[0], edge[1], 1, False
@@ -602,68 +601,30 @@ def build_3d_graph(graph_path: Path, max_nodes: int):
             w       = edge.get("weight",  1)
             on_path = edge.get("on_path", False)
         if u in node_set and v in node_set:
+            G.add_edge(u, v, weight=float(w))
             edge_weights[(u, v)] = w
             if on_path:
                 path_edges.add((u, v))
 
-    # ── Layout ────────────────────────────────────────────────────────────
-    # Path nodes → DNA double-helix spiral so the backbone is immediately
-    # recognisable regardless of graph topology.
-    # Branch/tip nodes → spring layout initialised near their path neighbour
-    # so they cluster around the helix rather than floating freely.
-    pos = {}
-    n_path = max(len(path_nodes), 1)
-    for i, n in enumerate(path_nodes):
-        t     = i / (n_path - 1) if n_path > 1 else 0.5
-        turns = 3.0                          # full helix rotations
-        angle = t * turns * 2 * math.pi
-        r     = 0.35                         # helix radius
-        pos[n] = np.array([
-            r * math.cos(angle),
-            r * math.sin(angle),
-            t * 2.0 - 1.0                   # z spans [-1, 1]
-        ])
+    pos = nx.spring_layout(G, dim=3, seed=42, k=0.65, weight="weight", iterations=90)
 
-    # Build path-node neighbour lookup for anchoring other nodes
-    path_pos_of = {}   # non-path node → nearest path node position
-    for (u, v) in edge_weights:
-        if u in pos and v not in pos:
-            path_pos_of[v] = pos[u]
-        elif v in pos and u not in pos:
-            path_pos_of[u] = pos[v]
-
-    # Spring layout for non-path nodes, warm-started near their path anchor
-    G2 = nx.DiGraph()
-    G2.add_nodes_from(other_nodes)
-    for (u, v), w in edge_weights.items():
-        if u in G2 and v in G2:
-            G2.add_edge(u, v, weight=float(w))
-
-    init2 = {}
-    rng = np.random.default_rng(42)
-    for n in other_nodes:
-        if n in path_pos_of:
-            base = path_pos_of[n]
-            init2[n] = base + rng.normal(0, 0.08, 3)
-        else:
-            init2[n] = rng.uniform(-1, 1, 3)
-
-    if other_nodes:
-        pos2 = nx.spring_layout(G2, dim=3, seed=42, k=0.5,
-                                 weight="weight", iterations=60, pos=init2)
-        pos.update(pos2)
-
-    # ── Styling by role ───────────────────────────────────────────────────
-    ROLE_COLOR   = {"path": "#4dd8e8", "branch": "#f5874f",
-                    "tip":  "#a855f7", "other":  "rgba(100,110,160,0.5)"}
-    ROLE_SIZE    = {"path": 6,  "branch": 4.5, "tip": 3,   "other": 2.5}
-    ROLE_OPACITY = {"path": 1.0,"branch": 0.75,"tip": 0.65,"other": 0.35}
-    ROLE_LABEL   = {"path": "Assembly path", "branch": "Branch point",
-                    "tip":  "Dead-end tip",  "other":  "Context node"}
+    ROLE_COLOR = {
+        "path":   "#4dd8e8",
+        "branch": "#f5874f",
+        "tip":    "#a855f7",
+        "other":  "rgba(100,110,150,0.4)",
+    }
+    ROLE_SIZE    = {"path": 6,   "branch": 3,    "tip": 2.5, "other": 2}
+    ROLE_OPACITY = {"path": 1.0, "branch": 0.65, "tip": 0.5, "other": 0.3}
+    ROLE_LABEL   = {
+        "path":   "Assembly path",
+        "branch": "Branch point",
+        "tip":    "Dead-end tip",
+        "other":  "Context node",
+    }
 
     traces = []
 
-    # ── Edges — background first, path backbone on top ────────────────────
     ox, oy, oz = [], [], []
     px, py, pz = [], [], []
     for (u, v) in edge_weights:
@@ -678,15 +639,14 @@ def build_3d_graph(graph_path: Path, max_nodes: int):
     if ox:
         traces.append(go.Scatter3d(
             x=ox, y=oy, z=oz, mode="lines",
-            line=dict(color="rgba(60,70,120,0.20)", width=0.8),
-            hoverinfo="none", name="Branch edges", showlegend=True))
+            line=dict(color="rgba(70,80,130,0.18)", width=0.7),
+            hoverinfo="none", name="Other edges", showlegend=True))
     if px:
         traces.append(go.Scatter3d(
             x=px, y=py, z=pz, mode="lines",
-            line=dict(color="#4dd8e8", width=3.5),
-            hoverinfo="none", name="Path edges", showlegend=True))
+            line=dict(color="#4dd8e8", width=2.8),
+            hoverinfo="none", name="Assembly path edges", showlegend=True))
 
-    # ── Nodes — render background roles first so path/branch draw on top ──
     for role in ("other", "tip", "branch", "path"):
         rn = [n for n in nodes if roles.get(n) == role and n in pos]
         if not rn:
@@ -700,8 +660,7 @@ def build_3d_graph(graph_path: Path, max_nodes: int):
                 size=ROLE_SIZE[role],
                 color=ROLE_COLOR[role],
                 opacity=ROLE_OPACITY[role],
-                line=dict(width=0.8 if role in ("path","branch") else 0,
-                          color="rgba(255,255,255,0.3)")),
+                line=dict(width=0)),
             text=[f"{n}<br>cov: {coverages.get(n,0)}" for n in rn],
             hovertemplate=f"<b>%{{text}}</b><br>{ROLE_LABEL[role]}<extra></extra>",
             name=ROLE_LABEL[role]))
@@ -712,13 +671,12 @@ def build_3d_graph(graph_path: Path, max_nodes: int):
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
             zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
-            bgcolor="rgba(0,0,0,0)",
-            camera=dict(eye=dict(x=1.6, y=1.6, z=0.8))),
+            bgcolor="rgba(0,0,0,0)"),
         legend=dict(
             x=0.01, y=0.99,
             font=dict(size=10, color="#a0b0cc"),
-            bgcolor="rgba(8,10,24,0.7)",
-            bordercolor="rgba(100,80,200,0.25)",
+            bgcolor="rgba(10,12,28,0.6)",
+            bordercolor="rgba(100,80,200,0.2)",
             borderwidth=1),
         margin=dict(l=0, r=0, t=0, b=0), height=520,
         paper_bgcolor="rgba(0,0,0,0)",

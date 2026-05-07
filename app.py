@@ -660,23 +660,37 @@ with st.sidebar:
             f'📁 {uploaded.name} · {fsize:.1f} KB</div>',
             unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-section">Algorithm Notes</div>', unsafe_allow_html=True)
-    with st.expander("Why De Bruijn graphs?"):
-        st.write("Hamiltonian path (find a path visiting every **node** once) is NP-hard. "
-                 "De Bruijn graphs reframe the problem as Eulerian path (visit every **edge** once) "
-                 "which Hierholzer solves in O(E).")
-    with st.expander("Rolling hash O(1)"):
-        st.write("Rabin-Karp polynomial hash slides in O(1): remove the leftmost character, "
-                 "add the new rightmost. Without this, hashing every k-mer is O(k·N) total.")
-    with st.expander("Bloom filter memory"):
-        st.write("Fixed 8 MB bit-array vs O(N·k) exact hash set. Two-filter scheme: "
-                 "insert to 'once' then 'twice' — only k-mers in 'twice' are solid (real genome sequence).")
-    with st.expander("Dijkstra + coverage"):
-        st.write("Edge weight = (max_freq + 1) − observed_freq. "
-                 "High coverage → low weight → Dijkstra finds the most-supported assembly path.")
-    with st.expander("Suffix Array O(n log²n)"):
-        st.write("Prefix-doubling (Manber & Myers): each round doubles the sorted prefix length. "
-                 "O(log n) rounds × O(n log n) sort. Kasai's LCP is then O(n) by amortised analysis.")
+    st.markdown('<div class="sb-section">Why Each Algorithm?</div>', unsafe_allow_html=True)
+    with st.expander("🧬 Why De Bruijn graphs?"):
+        st.write("Think of the DNA reads like shredded sentence strips. "
+                 "Instead of finding which strip connects to which (that's insanely hard — NP-hard to be exact), "
+                 "we chop everything into small fixed-size words (k-mers) and ask: "
+                 "which words flow into which? That gives us a graph where **finding the genome = tracing a path "
+                 "that uses every edge once** — and that's easy to solve in O(E) time using Hierholzer's algorithm.")
+    with st.expander("⚡ Why rolling hash?"):
+        st.write("Imagine reading a 300-letter DNA read and computing a fingerprint (hash) for every "
+                 "window of k letters. Doing it from scratch each time = very slow. "
+                 "Rolling hash is a trick: **slide the window by one letter, subtract the old letter, "
+                 "add the new one** — the hash updates in O(1) instead of O(k). "
+                 "Across millions of reads, that's a massive speed-up.")
+    with st.expander("🌸 Why Bloom filter?"):
+        st.write("Sequencing machines make ~1% mistakes. Those errors create fake k-mers that appear "
+                 "only once. We want to throw those away. "
+                 "But storing all k-mers in memory = gigabytes of RAM. "
+                 "A Bloom filter is a **tiny 8 MB checklist** — if a k-mer shows up twice, it's probably real. "
+                 "If only once, it's probably a typo. We keep only the 'seen twice' ones.")
+    with st.expander("🎯 Why Dijkstra for assembly?"):
+        st.write("Sometimes the De Bruijn graph is too messy for a clean Eulerian path. "
+                 "So we run Dijkstra as a backup — but instead of shortest distance, "
+                 "we treat **high-coverage edges (seen many times in reads) as low-cost roads**. "
+                 "Dijkstra naturally picks the path through the most-trusted data. "
+                 "It's like choosing the highway with the most traffic — more reads = more confidence.")
+    with st.expander("🔬 Why Suffix Array?"):
+        st.write("After assembly, we want to know: are there repeated sections in the genome? "
+                 "A Suffix Array sorts all possible suffixes of the assembled sequence alphabetically. "
+                 "Then the LCP (Longest Common Prefix) array tells us **which neighbours share a long "
+                 "starting stretch** — those are repeat regions. "
+                 "Building it takes O(n log²n) time, but finding all repeats from the result is just O(n).")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -967,44 +981,46 @@ with tab_problem:
     <div class="problem-card">
       <div class="problem-title">🧬 What Is Genome Assembly?</div>
       <p style="font-family:Inter,sans-serif;font-size:.88rem;color:var(--text);line-height:1.75;margin:0 0 1rem">
-        DNA sequencing machines cannot read an entire genome in one pass.
-        Instead they produce millions of short overlapping fragments called
-        <strong style="color:var(--cyan)">reads</strong> (75 – 300 base pairs each).
-        Genome assembly is the computational challenge of reconstructing the original,
-        complete genomic sequence from these millions of short, noisy, overlapping fragments —
-        like reassembling a shredded book when you have millions of copies
-        of random overlapping excerpts, some of which contain typos.
+        A DNA sequencing machine can't read your entire genome in one shot — it's like trying to read
+        a book by only ever seeing random 200-letter chunks of it, over and over again.
+        What comes out are millions of short DNA snippets called
+        <strong style="color:var(--cyan)">reads</strong> (each ~75–300 letters long).
+        <strong>Genome assembly</strong> is the job of stitching all those tiny overlapping pieces
+        back into the full original sequence — with some pieces containing typos from the machine,
+        and huge repeated sections that look identical no matter where you are in the genome.
+        HelixForge solves this with a 7-stage algorithmic pipeline.
       </p>
       <div class="problem-grid">
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--cyan)">⚡ Why It's Hard</div>
+          <div class="prob-item-title" style="color:var(--cyan)">⚡ Why Is It Hard?</div>
           <div class="prob-item-text">
-            • Reads are short (75–300 bp) vs genomes of billions of bp<br>
-            • Sequencing errors: ~1% substitutions per base<br>
-            • Repeat regions appear identically in multiple genomic locations<br>
-            • Both DNA strands are sequenced simultaneously<br>
-            • Volume: human genome needs ~1 TB of raw read data
+            • Each read is only 75–300 letters, but a genome can be <em>billions</em> long<br>
+            • The sequencing machine makes ~1% mistakes — so the data has typos<br>
+            • Some DNA sections repeat identically 100s of times — hard to place correctly<br>
+            • The machine reads both strands of DNA at once, so you get mirrored copies<br>
+            • A human genome produces ~1 TB of raw reads to process
           </div>
         </div>
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--purple)">🧩 Our Approach</div>
+          <div class="prob-item-title" style="color:var(--purple)">🧩 How HelixForge Solves It</div>
           <div class="prob-item-text">
-            Break each read into k-mers (substrings of length k).
-            Build a <strong>De Bruijn graph</strong> where each (k-1)-mer is a node
-            and each k-mer is a directed edge. The assembled genome
-            corresponds to an <strong>Eulerian path</strong> through this graph —
-            a path that visits every edge exactly once. Euler's theorem
-            guarantees this is solvable in O(E) time.
+            We chop every read into tiny fixed-size chunks called <strong>k-mers</strong>
+            (e.g. if k=21, each chunk is 21 letters). Then we build a
+            <strong>De Bruijn graph</strong> — a map where each chunk connects to
+            the next one that overlaps it. The genome sequence is hiding inside this graph
+            as a path that visits every connection exactly once.
+            We find that path using <strong>Hierholzer's algorithm</strong> in O(E) time.
           </div>
         </div>
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--pink)">🔬 Why Not Naive?</div>
+          <div class="prob-item-title" style="color:var(--pink)">🔬 Why Not Just Compare Everything?</div>
           <div class="prob-item-text">
-            The naive overlap-layout-consensus (OLC) approach computes
-            pairwise overlaps between all reads: <strong>O(N²)</strong> — infeasible
-            for millions of reads. Hamiltonian path (visit every node once)
-            is <strong>NP-hard</strong>. De Bruijn + Eulerian path reduces the
-            problem to <strong>O(N)</strong> preprocessing + <strong>O(E)</strong> traversal.
+            The obvious approach — compare every read to every other read to find overlaps —
+            means O(N²) comparisons. With 5 million reads, that's
+            <strong>25 trillion comparisons</strong>. Way too slow.
+            Our approach converts the problem into a graph traversal, bringing it down to
+            <strong>O(N)</strong> to build the graph and <strong>O(E)</strong> to find the answer.
+            That's the difference between hours and milliseconds.
           </div>
         </div>
       </div>
@@ -1015,75 +1031,99 @@ with tab_problem:
                 unsafe_allow_html=True)
 
     decisions = [
-        ("Rolling Hash (Rabin-Karp)",   "var(--cyan)",
-         "Naively hashing every k-mer requires O(k) operations each — giving O(Nk) total. "
-         "Rolling hash maintains a polynomial hash and updates it in O(1) per slide by removing "
-         "the outgoing character and adding the incoming one using a precomputed base power. "
-         "Uses Mersenne prime MOD=2⁶¹−1 with __uint128_t to avoid overflow without modular arithmetic overhead.",
+        ("Rolling Hash — used in: k-mer extraction from every read",   "var(--cyan)",
+         "<strong>The problem it solves:</strong> For every position in a DNA read, we need a fingerprint "
+         "(hash) of the next k letters. If we recompute it from scratch each time, "
+         "that's k operations × millions of positions = extremely slow.<br><br>"
+         "<strong>What rolling hash does:</strong> It keeps the current fingerprint in memory and "
+         "<em>slides</em> it one letter at a time — drop the old leftmost letter, add the new rightmost one. "
+         "Each slide is just 2 math operations, so O(1) per step instead of O(k).<br><br>"
+         "<strong>Where it runs:</strong> Stage 2 — every single read, every single position.",
          "O(N·k) → O(N)"),
 
-        ("Bloom Filter (Dual-Pass)",   "var(--purple)",
-         "Sequencing errors create singleton k-mers that don't appear in the real genome. "
-         "A naïve hash set storing all k-mers would require O(N·k) bytes of RAM — gigabytes for real data. "
-         "Two Bloom filters (once, twice) at fixed 8 MB total classify k-mers as solid (seen ≥2×) "
-         "with ~0.02% false-positive rate. Only solid k-mers enter the De Bruijn graph.",
-         "O(N·k) RAM → 8 MB fixed"),
+        ("Bloom Filter — used in: filtering out sequencing errors",   "var(--purple)",
+         "<strong>The problem it solves:</strong> Sequencing machines make typos (~1 per 100 letters). "
+         "Those typos create k-mers that appear only once — they're fake, not real genome. "
+         "If we kept all of them, the graph would be full of junk and the assembly would be wrong.<br><br>"
+         "<strong>What Bloom filter does:</strong> It's a tiny 8 MB checklist. "
+         "We pass over the reads twice: first pass marks a k-mer as 'seen once', "
+         "second pass upgrades it to 'seen twice'. Only 'seen twice' k-mers are trusted as real genome sequence.<br><br>"
+         "<strong>Where it runs:</strong> Stage 3 — before building the graph, so junk never gets in.",
+         "8 MB fixed vs gigabytes of RAM"),
 
-        ("Canonical K-mers",            "var(--green)",
-         "DNA is double-stranded: a read ATCG and its reverse complement CGAT represent the same genomic region. "
-         "Without canonicalization, these create duplicate conflicting graph nodes. "
-         "canonical = min(kmer, rev_comp(kmer)) maps both strands to the same node, "
-         "halving graph size and producing biologically correct assemblies.",
+        ("Canonical K-mers — used in: De Bruijn graph construction",  "var(--green)",
+         "<strong>The problem it solves:</strong> DNA is two-sided. A read <code>ATCG</code> and its "
+         "mirror image <code>CGAT</code> are actually the same piece of genome — just read from opposite ends. "
+         "Without handling this, we'd build two separate conflicting nodes for the same location.<br><br>"
+         "<strong>What canonical k-mers do:</strong> For every k-mer, we also compute its reverse complement "
+         "and keep whichever comes first alphabetically. Both strands collapse to one node. "
+         "This cuts the graph size in half and makes the assembly biologically accurate.<br><br>"
+         "<strong>Where it runs:</strong> Every time a k-mer is added to the graph (Stage 4).",
          "Graph size ÷ 2"),
 
-        ("Dijkstra + Coverage Weights", "var(--orange)",
-         "Edge weight = (max_freq + 1) − observed_freq. High-coverage edges get low cost, "
-         "so Dijkstra's min-heap SSSP naturally finds the path supported by the most reads. "
-         "This is the 'most confident' assembly backbone — useful when the graph is fragmented "
-         "and no Eulerian path exists. Lazy deletion (stale-entry skip) keeps the heap clean.",
+        ("Dijkstra — used in: finding the best assembly path when the graph is messy", "var(--orange)",
+         "<strong>The problem it solves:</strong> Sometimes the De Bruijn graph is fragmented — "
+         "there's no single clean Euler path through everything. We need a backup strategy "
+         "that still picks the most trustworthy route.<br><br>"
+         "<strong>What Dijkstra does here:</strong> We assign each edge a weight based on how often "
+         "that k-mer was seen in the reads. High coverage = low cost, low coverage = high cost. "
+         "Dijkstra's min-heap naturally follows the path with the most read support — "
+         "essentially finding the most confident assembly backbone.<br><br>"
+         "<strong>Where it runs:</strong> Stage 5 — runs in parallel with Hierholzer. "
+         "The longer result wins.",
          "O((V+E) log V)"),
 
-        ("Suffix Array (Prefix-Doubling)", "var(--pink)",
-         "Built on the assembled sequence to find all repeat regions. "
-         "Prefix-doubling: start with rank[i]=char(s[i]), then sort by pairs (rank[i], rank[i+gap]) "
-         "doubling gap each round. After O(log n) rounds all suffixes are uniquely ranked. "
-         "Sentinel '$' ensures no two suffixes are equal. Kasai's LCP uses the key invariant "
-         "that LCP decreases by at most 1 per suffix — giving O(n) total.",
-         "O(n log²n) + O(n) LCP"),
+        ("Suffix Array + LCP — used in: finding repeat regions in the assembled genome", "var(--pink)",
+         "<strong>The problem it solves:</strong> Some DNA sections appear many times — "
+         "these repeats confuse assemblers and are medically important (e.g. tandem repeat diseases). "
+         "After assembly, we want to report exactly where repeats are and how long they are.<br><br>"
+         "<strong>What Suffix Array does:</strong> Take the assembled sequence and sort every possible "
+         "suffix (every possible starting position to the end) alphabetically. "
+         "Suffixes that start with the same letters will sit next to each other. "
+         "The LCP (Longest Common Prefix) array then records how many letters each neighbour shares — "
+         "a long match = a repeat region.<br><br>"
+         "<strong>Where it runs:</strong> Stage 7 — after assembly is complete, purely for analysis.",
+         "O(n log²n) build + O(n) repeat scan"),
     ]
 
     for title, color, desc, complexity in decisions:
-        with st.expander(f"◈  {title}  —  {complexity}"):
+        with st.expander(f"◈  {title}"):
             st.markdown(
-                f'<div style="font-family:Inter,sans-serif;font-size:.85rem;'
-                f'color:var(--text);line-height:1.7;border-left:3px solid {color};'
-                f'padding-left:.9rem">{desc}</div>',
+                f'<div style="font-family:Inter,sans-serif;font-size:.84rem;'
+                f'color:var(--text);line-height:1.75;border-left:3px solid {color};'
+                f'padding-left:.9rem">{desc}</div>'
+                f'<div style="margin-top:.65rem;font-family:Space Mono,monospace;font-size:.68rem;'
+                f'color:{color};background:rgba(255,255,255,.04);border-radius:5px;padding:.3rem .7rem;'
+                f'display:inline-block">complexity: {complexity}</div>',
                 unsafe_allow_html=True)
 
-    st.markdown('<div class="hf-section">Real-World Context</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hf-section">Real-World Impact</div>', unsafe_allow_html=True)
     st.markdown("""
     <div class="problem-card" style="border-color:rgba(0,255,153,.2)">
-      <div class="problem-title" style="color:var(--green)">🌍 Where Is This Used?</div>
+      <div class="problem-title" style="color:var(--green)">🌍 The Same Algorithms Power Real Science</div>
       <div class="problem-grid">
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--green)">Medical Genomics</div>
+          <div class="prob-item-title" style="color:var(--green)">🏥 Fighting Diseases</div>
           <div class="prob-item-text">
-            Cancer mutation calling, rare disease diagnosis, pharmacogenomics.
-            GATK (Google/Broad Institute) and SPAdes (Saint Petersburg) use De Bruijn graphs at their core.
+            Doctors use genome assembly to find mutations that cause cancer or rare diseases.
+            Tools like GATK and SPAdes — used in hospitals worldwide — are built on exactly the
+            same De Bruijn graph idea that HelixForge implements.
           </div>
         </div>
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--cyan)">Pandemic Response</div>
+          <div class="prob-item-title" style="color:var(--cyan)">🦠 COVID-19 Tracking</div>
           <div class="prob-item-text">
-            SARS-CoV-2 variant tracking required assembling thousands of viral genomes per day.
-            Short-read assembly pipelines identical to HelixForge's were run at scale globally.
+            Every time a new COVID variant was detected, labs had to assemble the viral genome
+            from scratch in hours. The rolling hash + De Bruijn pipeline used here is the same
+            approach those labs ran thousands of times per day during the pandemic.
           </div>
         </div>
         <div class="prob-item">
-          <div class="prob-item-title" style="color:var(--purple)">Biodiversity</div>
+          <div class="prob-item-title" style="color:var(--purple)">🌿 Mapping All Life</div>
           <div class="prob-item-text">
-            Earth BioGenome Project aims to sequence all ~1.5 million eukaryotic species.
-            Efficient assembly algorithms like the ones implemented here are essential to that mission.
+            The Earth BioGenome Project wants to sequence every species on Earth (~1.5 million).
+            Without fast assembly algorithms like ours, that would take centuries.
+            Efficient k-mer hashing and graph traversal make it possible in years.
           </div>
         </div>
       </div>
@@ -1098,61 +1138,61 @@ with tab_complexity:
     st.markdown('<div class="hf-section">Full Complexity Table</div>', unsafe_allow_html=True)
 
     rows = [
-        ("FASTQ Reader",          "O(N)",            "N = total characters across all reads",                        "Sequential I/O"),
-        ("Reverse Complement",    "O(k)",            "Per k-mer; O(N) total across all reads",                      "String manipulation"),
-        ("Rolling Hash (init)",   "O(k)",            "One-time per read; O(N/k) reads × O(k) = O(N)",               "Polynomial evaluation"),
-        ("Rolling Hash (slide)",  "O(1)",            "Remove old char, add new char — amortised over all slides",    "Hash recurrence"),
-        ("Bloom Filter insert",   "O(1)",            "h hash functions × O(1) bit-array access each",                "Bit manipulation"),
-        ("Bloom Filter query",    "O(1)",            "Same as insert; stops early on first miss",                    "Bit manipulation"),
-        ("Graph add_edge",        "O(1) avg",        "Hash map insertion; O(1) average for unordered_map",           "Hash table"),
-        ("Graph Construction",    "O(V + E)",        "V = unique (k-1)-mers, E = unique solid k-mers",               "Adjacency list"),
-        ("Dijkstra SSSP",         "O((V+E) log V)", "Binary min-heap; lazy deletion of stale entries",              "Priority queue"),
-        ("Hierholzer Euler",      "O(E)",            "Each edge pushed/popped exactly once from stack",              "DFS + stack"),
-        ("Greedy Fallback",       "O(E)",            "Scans each edge at most once; O(k) hash lookup per edge",      "Greedy + hash"),
-        ("DP Error Correction",   "O(N)",            "Single pass; O(1) per position comparison",                    "DP / sliding window"),
-        ("Suffix Array build",    "O(n log² n)",    "O(log n) doubling rounds × O(n log n) sort each round",        "Divide & conquer + sort"),
-        ("LCP Array (Kasai)",     "O(n)",            "h increments ≤ n total; h decrements ≤ n total",               "Amortised analysis"),
-        ("Repeat Finding",        "O(n)",            "Linear scan of LCP array; grouping is amortised O(n)",         "LCP scan"),
-        ("GC Content",            "O(n)",            "Single pass counter over assembled sequence",                  "Linear scan"),
-        ("N50 Metric",            "O(c log c)",      "c = number of contigs; dominated by sort",                    "Sort + prefix sum"),
-        ("JSON Graph Writer",     "O(V + E)",        "Capped at 500 nodes / 2000 edges for visualiser performance", "Sequential I/O"),
-        ("Overall Pipeline",      "O(N + (V+E)logV + n log²n)", "N dominates on large datasets; SA dominates on long assemblies", "All modules"),
+        ("📂 FASTQ Reader",        "O(N)",                   "Read the input file once, line by line. N = total letters in all reads.",                              "Used here: loading raw sequencing data"),
+        ("🔄 Reverse Complement",  "O(k)",                   "Flip a k-mer and swap A↔T, C↔G. Needed because both DNA strands get sequenced.",                      "Used here: making canonical k-mers"),
+        ("⚡ Rolling Hash (setup)","O(k)",                   "Compute the first hash of a k-letter window — done once per read at the start.",                       "Used here: k-mer fingerprinting"),
+        ("⚡ Rolling Hash (slide)","O(1)",                   "Update the hash by dropping one letter and adding another. Much faster than recomputing from scratch.", "Used here: sliding across every read position"),
+        ("🌸 Bloom Filter insert", "O(1)",                   "Flip a few bits in an 8 MB checklist. Constant time regardless of how many k-mers we've seen.",        "Used here: tracking which k-mers appeared twice"),
+        ("🌸 Bloom Filter query",  "O(1)",                   "Check if those bits are set. If any bit is 0, the k-mer is definitely not there.",                     "Used here: filtering error k-mers before graph build"),
+        ("🧬 Graph add_edge",      "O(1) avg",               "Insert a k-mer as an edge into a hash map — average O(1), very fast in practice.",                     "Used here: building the De Bruijn graph"),
+        ("🧬 Graph Construction",  "O(V + E)",               "Build the full graph — V unique nodes (k-1-mers) and E unique edges (k-mers).",                        "Used here: Stage 4, after Bloom filtering"),
+        ("🎯 Dijkstra SSSP",       "O((V+E) log V)",         "Min-heap shortest path, but here 'shortest' means most-covered. Picks the most trusted assembly path.","Used here: Stage 5, backup assembly when no Euler path"),
+        ("🛤 Hierholzer Euler",    "O(E)",                   "Walk every edge exactly once using a stack. If the graph allows it, this gives the full genome path.",  "Used here: Stage 6, primary assembly strategy"),
+        ("🔀 Greedy Fallback",     "O(E)",                   "If neither method gives a complete path, greedily follow the highest-frequency edge at each step.",     "Used here: last resort when graph is fragmented"),
+        ("🩹 DP Error Correction", "O(N)",                   "Scan the assembled sequence and fix unlikely letters using a sliding window majority vote.",            "Used here: cleaning up the final sequence"),
+        ("🔬 Suffix Array build",  "O(n log² n)",            "Sort all suffixes of the assembly alphabetically. Doubling trick means we only need log(n) rounds.",    "Used here: Stage 7, repeat region detection"),
+        ("🔬 LCP Array (Kasai)",   "O(n)",                   "Find how many letters each pair of adjacent sorted suffixes share. Uses a clever invariant to stay O(n).","Used here: tells us where repeats start and end"),
+        ("🔍 Repeat Finding",      "O(n)",                   "Scan the LCP array — neighbouring entries with a long common prefix are repeat regions.",               "Used here: reporting tandem repeats in the output"),
+        ("📊 GC Content",          "O(n)",                   "Count G and C letters in the assembly, divide by total length. One simple pass.",                       "Used here: genome quality metric"),
+        ("📊 N50 Metric",          "O(c log c)",             "Sort contig lengths, sum from longest until you hit 50% of total — that length is N50.",               "Used here: standard assembly quality score"),
+        ("💾 JSON Graph Writer",   "O(V + E)",               "Write graph nodes and edges to a file for the 3D visualiser. Capped at 500 nodes for browser speed.",  "Used here: feeding the interactive graph display"),
+        ("🏁 Overall Pipeline",    "O(N + (V+E)logV + n log²n)", "Dominated by Dijkstra on graph-heavy data, or by the Suffix Array on long assemblies.",           "All 7 stages combined"),
     ]
 
-    df_full = pd.DataFrame(rows, columns=["Module","Complexity","Explanation","Technique"])
-    st.dataframe(df_full, use_container_width=True, hide_index=True, height=580)
+    df_full = pd.DataFrame(rows, columns=["Step","Complexity","Plain English — what it does & why","Where it's used"])
+    st.dataframe(df_full, use_container_width=True, hide_index=True, height=600)
 
-    st.markdown('<div class="hf-section">Space Complexity</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hf-section">Memory Usage (Space Complexity)</div>', unsafe_allow_html=True)
     space_rows = [
-        ("Bloom Filters (×2)",  "16 MB fixed",  "2 × 8 MB bit-arrays — independent of N"),
-        ("Rolling Hash",        "O(1)",         "Stores only current hash value and base power"),
-        ("De Bruijn Graph",     "O(V + E)",     "Adjacency list + edge_freq map + indeg/outdeg"),
-        ("Dijkstra structures", "O(V)",         "dist[], prev[], hops[] arrays + min-heap"),
-        ("Suffix Array",        "O(n)",         "SA + rank + tmp vectors; 3n integers"),
-        ("LCP Array",           "O(n)",         "One integer per suffix"),
-        ("Overall",             "O(N + V + E + n)", "Bloom filter constant keeps large-N practical"),
+        ("Bloom Filters (×2)",  "16 MB fixed",      "Two tiny 8 MB checklists — same size no matter how many reads you process. This is the key trick that makes HelixForge memory-efficient."),
+        ("Rolling Hash",        "O(1)",              "Just two numbers in memory: the current hash value and a precomputed power. Doesn't grow with input size at all."),
+        ("De Bruijn Graph",     "O(V + E)",          "One entry per unique k-mer (edge) and per unique (k-1)-mer (node). Grows with the genome, not the raw read count."),
+        ("Dijkstra structures", "O(V)",              "Arrays for distances and a min-heap — one slot per node. Manageable even for large graphs."),
+        ("Suffix Array",        "O(n)",              "Three arrays of length n (the assembly length). Longer assembly = more memory, but it's proportional and predictable."),
+        ("LCP Array",           "O(n)",              "One number per suffix — exactly n integers for an assembly of length n."),
+        ("Overall",             "O(N + V + E + n)", "The Bloom filter constant is the hero here — without it, storing all k-mers would need gigabytes instead of 16 MB."),
     ]
-    df_space = pd.DataFrame(space_rows, columns=["Structure","Space","Notes"])
+    df_space = pd.DataFrame(space_rows, columns=["What","Memory","Why it's this size"])
     st.dataframe(df_space, use_container_width=True, hide_index=True)
 
-    st.markdown('<div class="hf-section">APS Topics Applied</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hf-section">Algorithm & Data Structure Topics Used</div>', unsafe_allow_html=True)
     aps_rows = [
-        ("Graph Theory",         "De Bruijn graph — directed, weighted, (k-1)-mer nodes"),
-        ("Eulerian Paths",       "Hierholzer O(E) — genome assembly = Eulerian path problem"),
-        ("Shortest Path SSSP",   "Dijkstra with min-heap — coverage-weighted best-path assembly"),
-        ("Priority Queue",       "std::priority_queue<pair<double,string>, greater<>> for Dijkstra"),
-        ("Hashing",              "Rabin-Karp rolling hash — O(1) slide per k-mer position"),
-        ("Probabilistic DS",     "Bloom Filter — O(1) insert/query at fixed 8 MB vs O(Nk) exact"),
-        ("Divide & Conquer",     "SA prefix-doubling — each round doubles sorted prefix length"),
-        ("String Algorithms",    "Suffix Array, LCP Array, Kasai — O(n log²n) + O(n)"),
-        ("Dynamic Programming",  "DP error correction — optimal substructure per base position"),
-        ("Amortised Analysis",   "Kasai's h-invariant — O(n) total via amortised decrement argument"),
-        ("Greedy Algorithms",    "Frequency-weighted greedy walk — locally optimal edge selection"),
-        ("Sliding Window",       "Rolling hash slide + DP correction window — amortised O(1)"),
-        ("Two-Pointer",          "Kasai LCP extension — extend / decrement in linear total steps"),
-        ("Space-Time Tradeoff",  "Bloom filter: accept ≈0.02% FP rate to save gigabytes of RAM"),
-        ("Canonical Forms",      "min(kmer, rev_comp) — equivalence class for bidirectional k-mers"),
-        ("Complexity Analysis",  "Every module profiled theoretically + measured; reported in stats.txt"),
+        ("Graph Theory",         "We model the genome as a De Bruijn graph — directed edges are k-mers, nodes are (k-1)-mers. Assembly = path through graph."),
+        ("Eulerian Paths",       "Hierholzer's algorithm finds a path that uses every edge exactly once. This is exactly what genome assembly needs. O(E) time."),
+        ("Shortest Path (SSSP)", "Dijkstra finds the path through edges with highest read coverage — our backup assembly strategy when no Euler path exists."),
+        ("Priority Queue",       "Min-heap powers Dijkstra — always processes the lowest-cost node next. O(log V) per operation."),
+        ("Hashing",              "Rabin-Karp rolling hash gives O(1) k-mer fingerprinting per position instead of O(k). Used on every single read."),
+        ("Probabilistic DS",     "Bloom Filter — a space-efficient way to check 'have I seen this k-mer twice?' Uses only 8 MB regardless of data size."),
+        ("Divide & Conquer",     "Suffix Array is built by repeatedly halving the problem — rank by 1 letter, then 2, then 4, then 8... until all suffixes are sorted. Each round doubles how much we know."),
+        ("String Algorithms",    "Suffix Array sorts all suffixes; LCP Array finds shared prefixes between them; Kasai's algorithm builds LCP in O(n) by cleverly reusing work from the previous suffix."),
+        ("Dynamic Programming",  "Error correction scans the assembly and fixes each letter based on what the surrounding window says — each fix depends only on the current position, so it's O(1) per step."),
+        ("Amortised Analysis",   "Kasai's LCP algorithm seems like it could be slow, but a counter can only go down n times total — so even though individual steps vary, the total is always O(n)."),
+        ("Greedy Algorithms",    "When both Dijkstra and Hierholzer fail to give a full path, we fall back to greedily always picking the most-seen edge next. Simple but effective."),
+        ("Sliding Window",       "Rolling hash slides a fixed-size window across the read — add one letter on the right, drop one on the left. Same idea used in DP correction to check local base quality."),
+        ("Two-Pointer",          "Kasai's LCP extension works like two pointers — one extending forward, one resetting back. Their total movements stay within n, keeping the whole thing O(n)."),
+        ("Space-Time Tradeoff",  "Bloom filter accepts a tiny ~0.02% chance of a false positive in exchange for using 8 MB instead of gigabytes. We chose speed and memory over perfect accuracy — and it works."),
+        ("Canonical Forms",      "For every k-mer, we pick min(kmer, reverse_complement) as the 'official' version. This groups both DNA strands under one name, cutting the graph size in half."),
+        ("Complexity Analysis",  "Every module in HelixForge is measured both theoretically (what it should take) and in practice (how long it actually ran). Both are recorded in stats.txt for comparison."),
     ]
-    df_aps = pd.DataFrame(aps_rows, columns=["APS Topic","Application in HelixForge"])
-    st.dataframe(df_aps, use_container_width=True, hide_index=True, height=520)
+    df_aps = pd.DataFrame(aps_rows, columns=["Topic","How HelixForge uses it — in plain English"])
+    st.dataframe(df_aps, use_container_width=True, hide_index=True, height=530)

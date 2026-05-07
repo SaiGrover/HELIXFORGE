@@ -39,7 +39,7 @@ pip install -r requirements.txt
 streamlit run app.py
 
 # Or run assembler directly
-./assembler input.fastq 21 output/
+./assembler input.fastq 19 output/
 ```
 
 ---
@@ -51,30 +51,54 @@ streamlit run app.py
 | `genome.fasta` | Assembled DNA sequence, 60-char wrapped |
 | `stats.txt` | Read count, k-mer count, full complexity + timing breakdown |
 | `graph_data.json` | Up to 500 nodes / 2000 edges for 3D visualization |
+| `repeats.txt` | Repeat region analysis (suffix array + LCP) |
 
 ### stats.txt format
 ```
-Total Reads Processed: 1000
-Total k-mers: 95000
-Graph Nodes (V): 4500
-Graph Edges (E): 12300
-Assembly Length: 5023 bp
-k-mer size: 21
+=== HelixForge Assembly Statistics ===
 
-Time Complexity (Theoretical):
-  - Rolling Hash:        O(N)       - one hash update per character
-  - Bloom Filter:        O(N)       - constant-time insert/query per k-mer
-  - Graph Construction:  O(V + E)   - adjacency list insertion
-  - Traversal:           O(E)       - Hierholzer visits each edge once
-  - DP Correction:       O(n*m)     - LCS over sliding windows
-  Overall:               O(N + V + E)
+Input
+  Reads processed   : 9707
+  Unique k-mer hashes: 1973878
+  k-mer size (k)    : 19
+  Solid threshold   : 3x
 
-Execution Time (Measured):
-  Total Time:            142.3 ms
-  Hashing Time:          98.5 ms
-  Graph Build Time:      31.2 ms
-  Traversal Time:        9.8 ms
-  DP Time:               2.8 ms
+Graph
+  Nodes (V)         : 73833
+  Edges (E)         : 75145
+
+Assembly
+  Method selected   : Hierholzer (Eulerian)
+  Dijkstra length   : 43 bp
+  Hierholzer length : 1143 bp
+  Final length      : 1143 bp
+  GC content        : 38.15 %
+  N50               : 1143 bp
+
+Repeat Analysis (Suffix Array + LCP)
+  Min repeat length : 19 bp
+  Repeat regions    : 0
+
+Time Complexity (Theoretical)
+  Rolling Hash      : O(N)           one slide per character
+  Freq Counter      : O(N)           exact unordered_map count
+  Graph Build       : O(V + E)       adjacency list
+  Dijkstra          : O((V+E) log V) min-heap relaxation
+  Hierholzer        : O(E)            each edge visited once
+  DP Correction     : O(N)           single pass
+  Suffix Array      : O(n log² n)    prefix doubling
+  LCP Array         : O(n)           Kasai's algorithm
+  Repeat Finding    : O(n)           LCP scan
+  Overall           : O(N + (V+E) log V + n log² n)
+
+Execution Time (Measured)
+  Total             : 2408.22 ms
+  Hashing           : 881.69 ms
+  Graph Build       : 1249.92 ms
+  Dijkstra          : 42.66 ms
+  Hierholzer        : 34.64 ms
+  DP Correction     : 0.00 ms
+  Suffix Array+LCP  : 0.15 ms
 ```
 
 ---
@@ -86,39 +110,59 @@ Uses Mersenne prime modulus `2⁶¹ − 1` and `__uint128_t` multiplication to a
 
 **Why it matters:** Without rolling hash, extracting N k-mers of length k costs O(N·k). Rolling hash reduces this to O(N) total.
 
-### 2. Bloom Filter — `O(1)` insert/query
-Three hash functions over a 64-million-bit array (~8 MB). Two-pass counting: first pass marks seen k-mers, second pass marks k-mers seen twice. Only k-mers present twice are added to the graph, eliminating most sequencing errors (which appear exactly once).
+### 2. Exact Frequency Counter — `O(N)` total
+Two-pass approach using `unordered_map<uint64_t, int>`:
 
-**Why it matters:** A hash map of all k-mers would require O(N·k) memory. The Bloom filter uses a fixed 8 MB regardless of N.
+- **Pass 1:** Count every forward k-mer hash **and** every reverse-complement k-mer hash in the frequency map. This ensures k-mers that only appear on the reverse strand still meet the solid threshold.
+- **Pass 2:** Build the De Bruijn graph using **forward-only** edges for solid k-mers (frequency ≥ 3). Reverse-complement edges are deliberately excluded — adding them makes every edge symmetric, which creates artificial Eulerian circuits spanning the entire graph instead of one gene.
+
+**Solid threshold = 3×:** Oxford Nanopore sequencing has ~10–15% per-base error rate. A threshold of 2× still admits many error k-mers; 3× reliably removes them.
+
+**Why not Bloom filter?** A Bloom filter can only detect whether a k-mer was seen "at least once" or "at least twice" — it cannot store exact counts needed to distinguish noise (1–2×) from real signal (3×+) on noisy ONT data.
 
 ### 3. De Bruijn Graph — `O(V + E)`
-Each unique (k-1)-mer becomes a node. Each k-mer becomes a directed edge from its prefix to its suffix. Built as an adjacency list (`unordered_map<string, vector<string>>`). Node imbalance (out_degree − in_degree) identifies Eulerian path endpoints.
+Each unique (k-1)-mer becomes a node. Each solid k-mer creates a **directed edge** from its prefix `[0..k-2]` to its suffix `[1..k-1]`. Built as an adjacency list with an edge frequency map tracking how many reads support each transition.
 
-### 4. Hierholzer's Algorithm — `O(E)`
-Finds an Eulerian path (visiting every edge exactly once) using a stack-based DFS. Correct for graphs where at most two nodes have imbalanced degree. Falls back to greedy DFS for disconnected or complex graphs.
+**Key insight:** If a genome has an Eulerian path through its De Bruijn graph, that path spells out the assembled sequence. Euler's theorem guarantees this when every node has balanced in/out degrees.
 
-**Why it matters:** Hamiltonian path (visiting every node) is NP-hard. Eulerian path (visiting every edge) is linear. De Bruijn graphs convert genome assembly into the tractable problem.
+**No canonical k-mers in graph:** Taking `min(kmer, rev_comp(kmer))` randomly reverses edge direction — consecutive k-mers in a read no longer form a connected chain. Forward-only edges preserve read-order continuity.
 
-### 5. DP Error Correction — `O(n·m)`
-Slides a window over the assembled sequence and computes LCS between adjacent windows to detect inconsistency (LCS < 80% of window size signals a potential assembly artifact). Production systems would re-assemble or pull a corrected k-mer; this implementation preserves valid assemblies.
+### 4. Multi-Start Greedy Assembly — `O(E)`
+Sorts all nodes by total outgoing edge frequency (highest-coverage first), then runs a greedy walk from each of the top-80 seed nodes, always following the highest-frequency unused edge at each step. Returns the longest sequence found across all starts.
 
----
+**Why multi-start?** Real sequencing graphs are fragmented — not a single connected Eulerian graph. Single-start greedy gets stuck at the first dead end. Multi-start explores the whole graph, stitching together the longest possible chain.
 
-## 🌐 3D Visualization
+### 5. Dijkstra's Coverage-Weighted Assembly — `O((V+E) log V)`
+Assigns edge weight `= (max_freq + 1) − freq(u→v)` so high-coverage edges get low cost. Standard Dijkstra with a min-heap finds the path from source to sink that follows the most-supported transitions.
 
-- `networkx.DiGraph` builds the graph structure from `graph_data.json`
-- `nx.spring_layout(G, dim=3)` computes 3D positions
-- `plotly.graph_objects.Scatter3d` renders edges as thin lines and nodes as coloured spheres
-- Node colour = degree (dark teal = high connectivity = repeat regions)
-- Interactive: rotate, zoom, pan, hover for k-mer label
+**Why it matters:** In a fragmented graph, the Dijkstra path may be shorter than Greedy but represents the highest-confidence route through the data.
+
+### 6. Hierholzer's Eulerian Path — `O(E)`
+Finds a path that visits every edge exactly once using a stack-based iterative DFS. When the De Bruijn graph is truly Eulerian (all nodes balanced), this produces the longest possible assembly in linear time.
+
+**Sanity check:** If Hierholzer's output is more than 10× the Greedy output, it detected a full-graph circuit (not a gene path) and is discarded. The longest of the remaining methods is used instead.
+
+**Why it matters:** Hamiltonian path (visiting every node) is NP-hard. Eulerian path (visiting every edge) is O(E). De Bruijn graphs convert genome assembly into the tractable problem.
+
+### 7. DP Error Correction — `O(N)`
+Single-pass correction: if a base disagrees with both its immediate neighbours (which agree with each other), it is corrected to match them. Fixes isolated substitution errors introduced by sequencing.
+
+### 8. Suffix Array (Prefix-Doubling) — `O(n log² n)`
+Builds a sorted array of all suffix starting positions using O(log n) doubling rounds, each sorting by the pair `(rank[i], rank[i+gap])`.
+
+### 9. LCP Array (Kasai's Algorithm) — `O(n)`
+Computes the Longest Common Prefix between adjacent suffixes in linear time using the invariant that LCP drops by at most 1 when moving from suffix i to i+1.
+
+### 10. Repeat Finder — `O(n)`
+Scans the LCP array for runs of values ≥ min_len. Each such run represents a group of suffixes sharing a long common prefix — a repeat region in the assembly.
 
 ---
 
 ## ⚠️ Large File Handling
 
-The assembler is designed for 100 MB+ files:
+The assembler is designed for large FASTQ files:
 - FASTQ is read **line-by-line** (streaming, O(1) memory per read)
-- Bloom filter uses **fixed 8 MB** regardless of input size
+- Frequency counter pre-reserves 8M hash buckets to minimize rehashing
 - Graph is built **on the fly** during the second pass
 - JSON output is **capped at 500 nodes / 2000 edges** for visualization (full graph used for assembly)
 
@@ -130,8 +174,13 @@ The assembler is designed for 100 MB+ files:
 |--------|------------|-------|
 | FASTQ read | O(N) | N = total characters |
 | Rolling hash | O(N) | O(1) per k-mer step |
-| Bloom filter | O(N) | Constant-time hash |
-| Graph build | O(V + E) | Adjacency list |
+| Freq counter | O(N) | Exact unordered_map count |
+| Graph build | O(V + E) | Adjacency list, forward edges only |
+| Multi-start greedy | O(E) | Top-80 seed nodes |
+| Dijkstra | O((V+E) log V) | Min-heap, coverage-weighted |
 | Hierholzer | O(E) | Each edge visited once |
-| DP correction | O(n·m) | n, m = window size (≤50) |
-| **Overall** | **O(N + V + E)** | Linear in input + graph |
+| DP correction | O(N) | Single pass |
+| Suffix array | O(n log² n) | Prefix doubling |
+| LCP array | O(n) | Kasai's algorithm |
+| Repeat finder | O(n) | LCP scan |
+| **Overall** | **O(N + (V+E) log V + n log² n)** | Dominated by Dijkstra + SA |

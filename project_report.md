@@ -90,187 +90,17 @@ output_dir/
 
 ### 3.1 High-Level Module Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        HelixForge Pipeline                      │
-└─────────────────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────┐
-│  FASTQ Reader   │  ── reads raw sequencing data line by line
-│   (Stage 1)     │      normalises bases to A/C/G/T
-└────────┬────────┘
-         │  vector<string> reads
-         ▼
-┌─────────────────────────────────────────────────┐
-│         k-mer Processing Layer (Stage 2)         │
-│                                                  │
-│  ┌──────────────┐      ┌────────────────────┐   │
-│  │ Rolling Hash │─────▶│   Bloom Filter     │   │
-│  │ (Rabin-Karp) │      │ (once / twice)     │   │
-│  └──────────────┘      └──────────┬─────────┘   │
-│                                   │ solid k-mers │
-│  ┌──────────────┐                 ▼              │
-│  │  rev_comp()  │      ┌────────────────────┐   │
-│  │  canonical   │─────▶│  De Bruijn Graph   │   │
-│  │  k-mer       │      │  (adj + edge_freq) │   │
-│  └──────────────┘      └──────────┬─────────┘   │
-└──────────────────────────────────┬──────────────┘
-                                   │ Graph g
-                    ┌──────────────┴──────────────┐
-                    │                             │
-                    ▼                             ▼
-         ┌─────────────────┐           ┌──────────────────┐
-         │    Dijkstra     │           │   Hierholzer     │
-         │  (Stage 3)      │           │   (Stage 4)      │
-         │ Coverage-weight │           │ Eulerian path    │
-         │ min-heap SSSP   │           │ O(E)             │
-         └────────┬────────┘           └────────┬─────────┘
-                  │ dijk_seq                    │ hier_seq
-                  └──────────────┬──────────────┘
-                                 │ pick longer / non-empty
-                                 ▼
-                      ┌─────────────────┐
-                      │  DP Correction  │  ── Stage 5
-                      │  sliding window │
-                      └────────┬────────┘
-                               │ corrected seq
-                               ▼
-              ┌────────────────────────────────┐
-              │   String Analytics (Stage 6)   │
-              │                                │
-              │  ┌──────────────────────────┐  │
-              │  │   Suffix Array (SA-IS)   │  │
-              │  │   O(n log² n)            │  │
-              │  └──────────┬───────────────┘  │
-              │             │                  │
-              │  ┌──────────▼───────────────┐  │
-              │  │   LCP Array (Kasai)      │  │
-              │  │   O(n)                   │  │
-              │  └──────────┬───────────────┘  │
-              │             │                  │
-              │  ┌──────────▼───────────────┐  │
-              │  │   Repeat Finder          │  │
-              │  │   GC Content  │  N50     │  │
-              │  └──────────────────────────┘  │
-              └────────────────┬───────────────┘
-                               │
-                               ▼
-              ┌────────────────────────────────┐
-              │      Output Writer (Stage 7)   │
-              │                                │
-              │  genome.fasta  stats.txt       │
-              │  graph_data.json  repeats.txt  │
-              └────────────────────────────────┘
-```
+
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/de407279-0af8-41c3-a509-2d8a90996f2b" />
+
 
 ---
 
 ### 3.2 Detailed Flowchart
 
-```
-START
-  │
-  ├─▶ Parse args: <input.fastq> <k> <output_dir>
-  │      Validate: 3 ≤ k ≤ 63
-  │
-  │── STAGE 1: READ FASTQ ──────────────────────────────────────
-  │
-  ├─▶ Open FASTQ file
-  │   For each group of 4 lines:
-  │       Read sequence line (line % 4 == 1)
-  │       Normalise: replace non-ACGT chars with 'A'
-  │       Append to reads[]
-  │
-  │── STAGE 2: HASH + GRAPH ───────────────────────────────────
-  │
-  ├─▶ PASS 1 — Bloom filter population
-  │   For each read r:
-  │     Init RollingHash at position 0
-  │     For each k-mer position i:
-  │       Slide hash window
-  │       IF hash in once_filter → insert into twice_filter
-  │       ELSE → insert into once_filter
-  │
-  ├─▶ PASS 2 — Graph construction
-  │   For each read r:
-  │     For each k-mer at position i:
-  │       Slide hash window
-  │       IF hash in twice_filter (solid k-mer):
-  │         km = r.substr(i, k)
-  │         canonical = min(km, rev_comp(km))
-  │         add_edge(canonical[0..k-2], canonical[1..k-1])
-  │         Increment edge_freq["u->v"]
-  │
-  │── STAGE 3: DIJKSTRA ASSEMBLY ──────────────────────────────
-  │
-  ├─▶ Find max_freq across all edges
-  │   Initialize dist[] = ∞,  dist[src] = 0
-  │   Push (0, src) to min-heap
-  │   WHILE heap not empty:
-  │     Pop (d, u) with minimum cost
-  │     If d > dist[u]: skip (stale entry)
-  │     For each neighbour v of u:
-  │       weight = (max_freq + 1) - edge_freq[u→v]
-  │       IF dist[u] + weight < dist[v]:
-  │         Relax: update dist[v], prev[v], hops[v]
-  │         Push (new_dist, v) to heap
-  │   Reconstruct path via prev[] pointers → dijk_seq
-  │
-  │── STAGE 4: HIERHOLZER ASSEMBLY ────────────────────────────
-  │
-  ├─▶ Find Eulerian start node (outdeg - indeg == 1)
-  │   Push start to stack
-  │   WHILE stack not empty:
-  │     v = stack.top()
-  │     IF v has unused edges:
-  │       Push next unvisited neighbour, advance index
-  │     ELSE:
-  │       Add v to circuit, pop stack
-  │   Reverse circuit → hier_seq
-  │
-  ├─▶ SELECT: use longer of dijk_seq / hier_seq
-  │   If both empty → greedy_assemble()
-  │
-  │── STAGE 5: DP ERROR CORRECTION ────────────────────────────
-  │
-  ├─▶ For i = 1 to len-2:
-  │     IF seq[i-1] == seq[i+1] AND seq[i] ≠ seq[i-1]:
-  │       seq[i] = seq[i-1]   ← fix isolated mismatch
-  │
-  │── STAGE 6: SUFFIX ARRAY + LCP + REPEATS ──────────────────
-  │
-  ├─▶ Append sentinel '$' to seq → sa_input
-  │
-  ├─▶ BUILD SUFFIX ARRAY (prefix-doubling):
-  │     Init SA = [0..n-1], rank[i] = char(sa_input[i])
-  │     FOR gap = 1, 2, 4, ..., n:
-  │       Sort SA by (rank[i], rank[i+gap])
-  │       Recompute rank[] from sorted order
-  │       IF all ranks unique: BREAK
-  │
-  ├─▶ BUILD LCP (Kasai):
-  │     Build inverse SA (rank array)
-  │     For i = 0..n-1:
-  │       Extend match h between suffix i and its SA-predecessor
-  │       lcp[rank[i]] = h;  h = max(0, h-1)
-  │
-  ├─▶ FIND REPEATS:
-  │     Scan LCP array for runs ≥ min_len
-  │     Group consecutive high-LCP entries
-  │     Extract pattern and all occurrence positions
-  │
-  ├─▶ Compute GC content, N50
-  │
-  │── STAGE 7: WRITE OUTPUTS ───────────────────────────────────
-  │
-  ├─▶ genome.fasta  ── 60-char wrapped FASTA
-  ├─▶ stats.txt     ── full metrics + timing
-  ├─▶ graph_data.json ── weighted graph for visualiser
-  └─▶ repeats.txt   ── repeat region table
-  │
-STOP
-```
+
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/844f6b3a-e796-40a0-b456-9b1c3896b9de" />
+
 
 ---
 
@@ -278,70 +108,22 @@ STOP
 
 #### Level 0 — Context Diagram
 
-```
-                    ┌─────────────────┐
-  input.fastq ─────▶│                 │──▶ genome.fasta
-                    │   HelixForge    │──▶ stats.txt
-  k (integer) ─────▶│   Assembler     │──▶ graph_data.json
-                    │                 │──▶ repeats.txt
-  output_dir ──────▶│                 │
-                    └─────────────────┘
-```
+
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/7b679c6f-4421-4b9c-afd4-8dcb90e014ef" />
+
+
 
 #### Level 1 — Process Decomposition
 
-```
- ┌──────────┐   raw reads    ┌──────────────┐  solid k-mers   ┌────────────┐
- │  P1      │───────────────▶│     P2       │────────────────▶│    P3      │
- │  Read    │                │  Hash &      │                 │  Build     │
- │  FASTQ   │                │  Filter      │                 │  De Bruijn │
- └──────────┘                └──────────────┘                 │  Graph     │
-                              ▲                               └─────┬──────┘
-                              │                                     │
-                           once_BF                              Graph g
-                           twice_BF                                 │
-                              │                         ┌───────────┴─────────┐
-                              │                         ▼                     ▼
-                              │                   ┌──────────┐         ┌──────────┐
-                              │                   │   P4     │         │   P5     │
-                              │                   │ Dijkstra │         │Hierholzer│
-                              │                   │ Assembly │         │ Assembly │
-                              │                   └────┬─────┘         └────┬─────┘
-                              │                        │   dijk_seq         │ hier_seq
-                              │                        └──────────┬─────────┘
-                              │                                   ▼
-                              │                          ┌─────────────────┐
-                              │                          │       P6        │
-                              │                          │   DP Correct    │
-                              │                          └────────┬────────┘
-                              │                                   │ seq
-                              │                    ┌──────────────┼─────────────┐
-                              │                    ▼              ▼             ▼
-                              │             ┌──────────┐  ┌──────────┐  ┌──────────┐
-                              │             │    P7    │  │    P8    │  │    P9    │
-                              │             │ Suffix   │  │   GC /   │  │  Output  │
-                              │             │ Array +  │  │   N50    │  │  Writer  │
-                              │             │   LCP    │  │          │  │          │
-                              │             └──────────┘  └──────────┘  └──────────┘
-```
+
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/db05352a-0351-4a7c-857e-2757b13209e4" />
+
 
 #### Level 2 — De Bruijn Graph Data Store
 
-```
- ┌──────────────────────────────────────────────────────┐
- │                   Graph Data Store                    │
- │                                                       │
- │  adj        : { node → [neighbour1, neighbour2, ...]} │
- │  indeg      : { node → in-degree  count }             │
- │  outdeg     : { node → out-degree count }             │
- │  edge_freq  : { "u->v" → occurrence count }           │
- └──────────────────────────────────────────────────────┘
-         ▲                              │
-         │ add_edge(u, v)               │ start_node() / sink_node()
-         │ edge_freq[key]++             │ adj[u] → neighbours
-         │                             ▼
-   [Graph Build P3]           [Dijkstra P4 / Hierholzer P5]
-```
+
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/6c2dbb94-5447-4b73-b70b-77de589c5df2" />
+
 
 ---
 

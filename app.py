@@ -573,74 +573,122 @@ def parse_repeats(path: Path) -> list[dict]:
 
 def build_3d_graph(graph_path: Path, max_nodes: int):
     gdata = json.loads(graph_path.read_text())
-    nodes = gdata["nodes"][:max_nodes]
+    raw_nodes = gdata["nodes"][:max_nodes]
+
+    # Support both old format (list of strings) and new format (list of dicts with role/coverage)
+    if raw_nodes and isinstance(raw_nodes[0], dict):
+        nodes    = [n["id"]               for n in raw_nodes]
+        roles    = {n["id"]: n.get("role",     "other") for n in raw_nodes}
+        coverages= {n["id"]: n.get("coverage", 1)       for n in raw_nodes}
+    else:
+        nodes    = raw_nodes
+        roles    = {n: "other" for n in nodes}
+        coverages= {n: 1       for n in nodes}
+
     node_set = set(nodes)
 
     G = nx.DiGraph()
     G.add_nodes_from(nodes)
     edge_weights = {}
+    path_edges   = set()
+
     for edge in gdata["edges"]:
-        # Handle both old [u,v] and new {"from":u,"to":v,"weight":w} formats
         if isinstance(edge, list):
-            u, v, w = edge[0], edge[1], 1
+            u, v, w, on_path = edge[0], edge[1], 1, False
         else:
-            u = edge.get("from",""); v = edge.get("to",""); w = edge.get("weight",1)
+            u       = edge.get("from",    "")
+            v       = edge.get("to",      "")
+            w       = edge.get("weight",  1)
+            on_path = edge.get("on_path", False)
         if u in node_set and v in node_set:
-            G.add_edge(u, v)
+            G.add_edge(u, v, weight=float(w))
             edge_weights[(u, v)] = w
+            if on_path:
+                path_edges.add((u, v))
 
-    pos  = nx.spring_layout(G, dim=3, seed=42, k=0.55)
-    degs = [G.degree(n) for n in nodes]
+    # Spring layout: edge weights pull high-coverage neighbours together,
+    # so the assembly backbone naturally forms a ribbon rather than a cloud.
+    pos = nx.spring_layout(G, dim=3, seed=42, k=0.65, weight="weight", iterations=90)
 
-    # Build edge traces with weight-based coloring
-    max_w = max(edge_weights.values(), default=1)
-    ex, ey, ez, ec = [], [], [], []
-    for (u, v), w in edge_weights.items():
+    # ── Role styling ──────────────────────────────────────────────────────
+    ROLE_COLOR = {
+        "path":   "#4dd8e8",              # cyan  — assembly backbone
+        "branch": "#f5874f",              # orange — branching points
+        "tip":    "#a855f7",              # purple — dead-end tips
+        "other":  "rgba(100,110,150,0.4)",# dim   — background context
+    }
+    ROLE_SIZE = {"path": 5, "branch": 8, "tip": 3.5, "other": 2.5}
+    ROLE_LABEL= {
+        "path":   "Assembly path",
+        "branch": "Branch point",
+        "tip":    "Dead-end tip",
+        "other":  "Context node",
+    }
+    ROLE_OPACITY = {"path": 0.95, "branch": 0.95, "tip": 0.80, "other": 0.35}
+
+    traces = []
+
+    # ── Edge traces: dim background edges first, bright path edges on top ──
+    ox, oy, oz = [], [], []   # other edges
+    px, py, pz = [], [], []   # path edges
+
+    for (u, v) in edge_weights:
         if u not in pos or v not in pos:
             continue
-        x0,y0,z0 = pos[u]; x1,y1,z1 = pos[v]
-        ex += [x0,x1,None]; ey += [y0,y1,None]; ez += [z0,z1,None]
+        x0, y0, z0 = pos[u]
+        x1, y1, z1 = pos[v]
+        if (u, v) in path_edges:
+            px += [x0, x1, None]; py += [y0, y1, None]; pz += [z0, z1, None]
+        else:
+            ox += [x0, x1, None]; oy += [y0, y1, None]; oz += [z0, z1, None]
 
-    edge_trace = go.Scatter3d(
-        x=ex, y=ey, z=ez, mode="lines",
-        line=dict(
-            color=[w/max_w for (u,v),w in edge_weights.items() for _ in range(3)],
-            colorscale=[[0,"rgba(0,30,50,.25)"],[0.4,"rgba(0,240,255,.5)"],[1,"rgba(204,0,255,.9)"]],
-            width=1.5),
-        hoverinfo="none", name="edges")
+    if ox:
+        traces.append(go.Scatter3d(
+            x=ox, y=oy, z=oz, mode="lines",
+            line=dict(color="rgba(70,80,130,0.18)", width=0.7),
+            hoverinfo="none", name="Other edges", showlegend=True))
 
-    node_trace = go.Scatter3d(
-        x=[pos[n][0] for n in nodes],
-        y=[pos[n][1] for n in nodes],
-        z=[pos[n][2] for n in nodes],
-        mode="markers",
-        marker=dict(
-            size=[3.5 + d*.8 for d in degs],
-            color=degs,
-            colorscale=[
-                [0,   "#0a0030"],
-                [0.2, "#00c8a0"],
-                [0.5, "#00f0ff"],
-                [0.8, "#cc00ff"],
-                [1,   "#ff0088"]],
-            colorbar=dict(
-                title=dict(text="Degree", font=dict(color="#8090cc", size=9)),
-                thickness=8, len=.45,
-                tickfont=dict(color="#8090cc", size=8)),
-            opacity=.92, line=dict(width=0)),
-        text=nodes,
-        hovertemplate="<b>%{text}</b><br>degree: %{marker.color}<extra></extra>",
-        name="nodes")
+    if px:
+        traces.append(go.Scatter3d(
+            x=px, y=py, z=pz, mode="lines",
+            line=dict(color="#4dd8e8", width=2.8),
+            hoverinfo="none", name="Assembly path edges", showlegend=True))
 
-    fig = go.Figure(data=[edge_trace, node_trace])
+    # ── Node traces: one per role so legend entries are clean ─────────────
+    for role in ("other", "tip", "path", "branch"):   # render important roles on top
+        role_nodes = [n for n in nodes if roles.get(n) == role and n in pos]
+        if not role_nodes:
+            continue
+        traces.append(go.Scatter3d(
+            x=[pos[n][0] for n in role_nodes],
+            y=[pos[n][1] for n in role_nodes],
+            z=[pos[n][2] for n in role_nodes],
+            mode="markers",
+            marker=dict(
+                size=ROLE_SIZE[role],
+                color=ROLE_COLOR[role],
+                opacity=ROLE_OPACITY[role],
+                line=dict(
+                    width=1 if role in ("path","branch") else 0,
+                    color="rgba(255,255,255,0.25)")),
+            text=[f"{n}<br>role: {role}<br>cov: {coverages.get(n,0)}" for n in role_nodes],
+            hovertemplate="<b>%{text}</b><extra></extra>",
+            name=ROLE_LABEL[role]))
+
+    fig = go.Figure(data=traces)
     fig.update_layout(
         scene=dict(
-            xaxis=dict(showgrid=False,zeroline=False,showticklabels=False,showbackground=False),
-            yaxis=dict(showgrid=False,zeroline=False,showticklabels=False,showbackground=False),
-            zaxis=dict(showgrid=False,zeroline=False,showticklabels=False,showbackground=False),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
+            zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, showbackground=False),
             bgcolor="rgba(0,0,0,0)"),
-        legend=dict(x=.01, y=.99, font=dict(size=9,color="#8090cc"), bgcolor="rgba(0,0,0,0)"),
-        margin=dict(l=0,r=0,t=0,b=0), height=500,
+        legend=dict(
+            x=0.01, y=0.99,
+            font=dict(size=10, color="#a0b0cc"),
+            bgcolor="rgba(10,12,28,0.6)",
+            bordercolor="rgba(100,80,200,0.2)",
+            borderwidth=1),
+        margin=dict(l=0, r=0, t=0, b=0), height=520,
         paper_bgcolor="rgba(0,0,0,0)",
         hoverlabel=dict(bgcolor="#10003a", font_size=11, font_family="Space Mono"))
     return fig

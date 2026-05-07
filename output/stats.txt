@@ -1,27 +1,26 @@
 === HelixForge Assembly Statistics ===
 
 Input
-  Reads processed   : 13853
-  Unique k-mer hashes: 3094002
+  Reads processed   : 6641
+  Unique k-mer hashes: 1603808
   k-mer size (k)    : 19
   Solid threshold   : 3x
 
 Graph
-  Nodes (V)         : 114129
-  Edges (E)         : 116238
+  Nodes (V)         : 54683
+  Edges (E)         : 54755
 
 Assembly
-  Method selected   : Greedy (multi-start)
-  Dijkstra length   : 31 bp
-  Hierholzer length : 238 bp
-  Final length      : 499 bp
-  GC content        : 52.91 %
-  N50               : 499 bp
+  Method selected   : Dijkstra (coverage-weighted)
+  Dijkstra length   : 237 bp
+  Hierholzer length : 0 bp
+  Final length      : 237 bp
+  GC content        : 59.49 %
+  N50               : 237 bp
 
 Repeat Analysis (Suffix Array + LCP)
   Min repeat length : 19 bp
-  Repeat regions    : 4
-  Longest repeat    : 22 bp (2x)
+  Repeat regions    : 0
 
 Time Complexity (Theoretical)
   Rolling Hash      : O(N)           one slide per character
@@ -36,10 +35,10 @@ Time Complexity (Theoretical)
   Overall           : O(N + (V+E) log V + n log² n)
 
 Execution Time (Measured)
-  Total             : 2392.02 ms
-  Hashing           : 873.67 ms
-  Graph Build       : 1271.41 ms
-  Dijkstra          : 57.88 ms
-  Hierholzer        : 43.45 ms
+  Total             : 1598.88 ms
+  Hashing           : 653.71 ms
+  Graph Build       : 756.11 ms
+  Dijkstra          : 49.71 ms
+  Hierholzer        : 35.36 ms
   DP Correction     : 0.00 ms
-  Suffix Array+LCP  : 0.07 ms
+  Suffix Array+LCP  : 0.08 ms

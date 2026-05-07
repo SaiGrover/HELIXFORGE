@@ -1,22 +1,7 @@
 HelixForge — Repeat Analysis Report
 ============================================================
-Assembly length : 499 bp
+Assembly length : 237 bp
 Min repeat len  : 19 bp
-Repeats found   : 4
+Repeats found   : 0
 
-Top 4 repeats (sorted by length):
-------------------------------------------------------------
-Rank  Length    Occurrences   Positions (first 6)
-------------------------------------------------------------
-1     22        2             [ 79, 35 ]
-  Pattern: TTCCCCTTTTTTTTCCCCCCCC
-
-2     21        2             [ 80, 36 ]
-  Pattern: TCCCCTTTTTTTTCCCCCCCC
-
-3     20        2             [ 81, 37 ]
-  Pattern: CCCCTTTTTTTTCCCCCCCC
-
-4     19        2             [ 82, 38 ]
-  Pattern: CCCTTTTTTTTCCCCCCCC
-
+No repeats found at this threshold.

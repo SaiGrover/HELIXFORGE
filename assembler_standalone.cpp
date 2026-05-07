@@ -576,40 +576,125 @@ string escape_json(const string& s) {
     return o;
 }
 
-void write_graph_json(const string& path, const Graph& g) {
-    const int MAX_NODES = 500, MAX_EDGES = 2000;
-    ofstream f(path);
-    f << "{\n  \"nodes\": [\n";
+// Smart graph export: selects structurally meaningful nodes instead of random ones.
+// Priority: (1) assembly path nodes, (2) branch points, (3) path neighbours, (4) high-cov fill.
+// Each node is tagged with a role; each edge is tagged on_path so the visualiser
+// can highlight the assembly backbone in a distinct colour.
+void write_graph_json(const string& path, const Graph& g,
+                      const string& seq, int k) {
+    const int MAX_NODES = 400, MAX_EDGES = 3000;
 
-    unordered_set<string> all_nodes;
-    for (auto& [n,_] : g.adj) all_nodes.insert(n);
-    vector<string> nodes(all_nodes.begin(), all_nodes.end());
-    if ((int)nodes.size() > MAX_NODES) nodes.resize(MAX_NODES);
-
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        f << "    " << escape_json(nodes[i]);
-        if (i+1 < nodes.size()) f << ",";
-        f << "\n";
-    }
-    f << "  ],\n  \"edges\": [\n";
-
-    int ecnt = 0; bool first = true;
-    for (auto& [u, nbrs] : g.adj) {
-        for (auto& v : nbrs) {
-            if (ecnt++ >= MAX_EDGES) goto done_edges;
-            string key  = u + "->" + v;
-            int    freq = g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
-            if (!first) f << ",\n";
-            f << "    {\"from\":" << escape_json(u)
-              << ",\"to\":"      << escape_json(v)
-              << ",\"weight\":"  << freq << "}";
-            first = false;
+    // ── 1. Extract assembly path nodes in sequence order ──────────────────
+    vector<string> path_ordered;
+    unordered_set<string> path_set;
+    if (!seq.empty() && (int)seq.size() >= k - 1) {
+        for (int i = 0; i + k - 1 <= (int)seq.size(); ++i) {
+            string nd = seq.substr(i, k - 1);
+            if (g.adj.count(nd) && !path_set.count(nd)) {
+                path_set.insert(nd);
+                path_ordered.push_back(nd);
+            }
         }
     }
-    done_edges:
+
+    // ── 2. Identify branch nodes (combined degree > 2) ────────────────────
+    unordered_set<string> branch_set;
+    for (auto& [n, od] : g.outdeg) {
+        int id = g.indeg.count(n) ? g.indeg.at(n) : 0;
+        if (od + id > 2) branch_set.insert(n);
+    }
+
+    // ── 3. Build selected node map with roles ─────────────────────────────
+    unordered_map<string, string> node_role;  // id → "path"|"branch"|"tip"|"other"
+    unordered_map<string, int>    node_cov;
+
+    auto add_node = [&](const string& n, const string& role) {
+        if (node_role.count(n) || !g.adj.count(n)) return;
+        node_role[n] = role;
+        int cov = 0;
+        for (auto& nb : g.adj.at(n)) {
+            string key = n + "->" + nb;
+            cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
+        }
+        node_cov[n] = cov;
+    };
+
+    for (auto& n : path_ordered)  { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "path"); }
+    for (auto& n : branch_set)    { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "branch"); }
+
+    // Immediate neighbours of path nodes (shows branching off the backbone)
+    for (auto& n : path_ordered) {
+        if ((int)node_role.size() >= MAX_NODES) break;
+        if (!g.adj.count(n)) continue;
+        for (auto& nb : g.adj.at(n)) {
+            if ((int)node_role.size() >= MAX_NODES) break;
+            int od = g.outdeg.count(nb) ? g.outdeg.at(nb) : 0;
+            add_node(nb, od == 0 ? "tip" : "other");
+        }
+    }
+
+    // Fill remaining slots with highest-coverage nodes
+    vector<pair<int,string>> cov_fill;
+    for (auto& [n, _] : g.adj) {
+        if (node_role.count(n)) continue;
+        int cov = 0;
+        for (auto& nb : g.adj.at(n)) {
+            string key = n + "->" + nb;
+            cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
+        }
+        cov_fill.push_back({cov, n});
+    }
+    sort(cov_fill.rbegin(), cov_fill.rend());
+    for (auto& [cov, n] : cov_fill) {
+        if ((int)node_role.size() >= MAX_NODES) break;
+        add_node(n, "other");
+    }
+
+    // ── 4. Collect edges between selected nodes ───────────────────────────
+    // Build set of consecutive path-node pairs for on_path tagging
+    unordered_set<string> path_edge_set;
+    for (int i = 0; i + 1 < (int)path_ordered.size(); ++i)
+        path_edge_set.insert(path_ordered[i] + "->" + path_ordered[i+1]);
+
+    struct SelEdge { string u, v; int w; bool on_path; };
+    vector<SelEdge> sel_edges;
+    for (auto& [n, role] : node_role) {
+        if (!g.adj.count(n)) continue;
+        for (auto& nb : g.adj.at(n)) {
+            if (!node_role.count(nb)) continue;
+            if ((int)sel_edges.size() >= MAX_EDGES) goto done_collecting;
+            string key = n + "->" + nb;
+            int freq = g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
+            sel_edges.push_back({n, nb, freq, path_edge_set.count(key) > 0});
+        }
+    }
+    done_collecting:;
+
+    // ── 5. Write JSON ─────────────────────────────────────────────────────
+    ofstream f(path);
+    f << "{\n  \"nodes\": [\n";
+    bool first = true;
+    for (auto& [n, role] : node_role) {
+        if (!first) f << ",\n";
+        f << "    {\"id\":"       << escape_json(n)
+          << ",\"role\":"         << escape_json(role)
+          << ",\"coverage\":"     << node_cov[n] << "}";
+        first = false;
+    }
+    f << "\n  ],\n  \"edges\": [\n";
+    first = true;
+    for (auto& e : sel_edges) {
+        if (!first) f << ",\n";
+        f << "    {\"from\":"   << escape_json(e.u)
+          << ",\"to\":"         << escape_json(e.v)
+          << ",\"weight\":"     << e.w
+          << ",\"on_path\":"    << (e.on_path ? "true" : "false") << "}";
+        first = false;
+    }
     f << "\n  ],\n";
-    f << "  \"total_nodes\": " << g.V() << ",\n";
-    f << "  \"total_edges\": " << g.E() << "\n}\n";
+    f << "  \"total_nodes\": "      << g.V()                 << ",\n";
+    f << "  \"total_edges\": "      << g.E()                 << ",\n";
+    f << "  \"path_node_count\": "  << path_ordered.size()   << "\n}\n";
 }
 
 /* =========================================================
@@ -798,6 +883,7 @@ int main(int argc, char* argv[]) {
     /* ── Stage 5 : DP error correction ──────────────────────── */
     cerr << "[5/7] DP error correction...\n";
     Timer dt; dt.start();
+    string seq_for_graph = seq;   // pre-correction: k-mers still exist in graph
     seq = dp_correct(seq);
     double dp_ms = dt.ms();
 
@@ -888,7 +974,7 @@ int main(int argc, char* argv[]) {
     }
 
     // graph_data.json — nodes + weighted edges for visualiser
-    write_graph_json(out_dir + "/graph_data.json", g);
+    write_graph_json(out_dir + "/graph_data.json", g, seq_for_graph, k);
 
     // repeats.txt — detailed repeat report
     write_repeat_report(out_dir + "/repeats.txt", repeats, seq, REPEAT_MIN_LEN);

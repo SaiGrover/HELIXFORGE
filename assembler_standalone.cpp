@@ -3,9 +3,11 @@
  * DAA Modules:
  *   Rolling Hash          — Rabin-Karp O(1) per k-mer slide
  *   Bloom Filter          — probabilistic solid-kmer filter, O(1) insert/query
+ *   Exact Freq Counter    — two-pass unordered_map solid-kmer filter, O(N)
  *   De Bruijn Graph       — adjacency list with edge-frequency tracking
  *   Hierholzer            — Eulerian path traversal, O(E)
  *   Dijkstra              — coverage-weighted shortest path, O((V+E) log V)
+ *   Multi-Start Greedy    — coverage-ranked greedy walk, handles fragmented graphs
  *   DP Error Correction   — sliding window majority vote, O(N)
  *   Suffix Array          — prefix-doubling O(n log² n)
  *   LCP Array             — Kasai's algorithm, O(n)
@@ -48,8 +50,10 @@ struct Timer {
 
 /* =========================================================
    REVERSE COMPLEMENT — canonical k-mer representation
-   canonical = min(kmer, rev_comp(kmer))
-   Halves graph size; correctly handles both sequencing strands.
+   Used in Pass 1 (frequency counting) so k-mers that only
+   appear on the reverse strand still meet the solid threshold.
+   NOT used to add edges to the graph (would create symmetric
+   back-edges → artificial full-graph Eulerian circuits).
    ========================================================= */
 string rev_comp(const string& s) {
     string r; r.reserve(s.size());
@@ -103,6 +107,9 @@ public:
 /* =========================================================
    BLOOM FILTER — O(1) insert/query, ~8 MB
    Two-filter scheme: only add to graph if seen at least twice.
+   Kept as a reference implementation. The pipeline currently
+   uses an exact frequency counter (see Pass 1 in main) which
+   provides threshold=3 needed for ONT sequencing error rates.
    ========================================================= */
 class BloomFilter {
     static constexpr size_t BITS = 1ULL << 26;

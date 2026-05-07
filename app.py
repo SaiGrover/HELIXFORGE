@@ -463,22 +463,29 @@ def parse_stats(path: Path) -> dict:
             if "overall" in kl:
                 data["overall"] = v_str
             elif v_str:
-                tokens     = v_str.split()
-                complexity = tokens[0] if tokens else ""
-                desc_tail  = v_str[len(complexity):].strip().lstrip("-").strip()
-                data["theoretical"].append({"step":k_str,"complexity":complexity,"reason":desc_tail})
+                # Strip leading "- " dash bullet from key names
+                step_name = k_str.lstrip("- ").strip()
+                # Split on " - " to separate complexity expression from description
+                if " - " in v_str:
+                    complexity, desc_tail = v_str.split(" - ", 1)
+                    complexity = complexity.strip(); desc_tail = desc_tail.strip()
+                else:
+                    parts = v_str.split(None, 1)
+                    complexity = parts[0]; desc_tail = parts[1].strip() if len(parts) > 1 else ""
+                data["theoretical"].append({"step":step_name,"complexity":complexity,"reason":desc_tail})
         elif in_meas:
             data["measured"][k_str] = v_str
         else:
             if   "reads processed"   in kl: data["reads"]          = v_str
-            elif "total k-mers"      in kl: data["total_kmers"]    = v_str
-            elif "k-mer size"        in kl: data["kmer_size"]      = v_str
-            elif "nodes (v)"         in kl: data["nodes"]          = v_str
-            elif "edges (e)"         in kl: data["edges"]          = v_str
+            elif "total k-mer"       in kl: data["total_kmers"]    = v_str
+            elif "k-mer size"        in kl or "kmer size" in kl: data["kmer_size"] = v_str
+            elif "nodes (v)"         in kl or "graph nodes" in kl: data["nodes"]   = v_str
+            elif "edges (e)"         in kl or "graph edges" in kl: data["edges"]   = v_str
             elif "method selected"   in kl: data["method"]         = v_str
             elif "dijkstra length"   in kl: data["dijk_len"]       = v_str
             elif "hierholzer length" in kl: data["hier_len"]       = v_str
-            elif "final length"      in kl: data["final_len"]      = v_str.replace(" bp","").strip()
+            elif "final length"      in kl or "assembly length" in kl:
+                data["final_len"] = v_str.replace(" bp","").strip()
             elif "gc content"        in kl: data["gc"]             = v_str.replace(" %","").strip()
             elif "n50"               in kl: data["n50"]            = v_str.replace(" bp","").strip()
             elif "min repeat length" in kl: data["min_repeat"]     = v_str
@@ -839,19 +846,25 @@ with tab_results:
         # Timing chart — all 7 stages
         st.markdown('<div class="hf-section">Execution Timing</div>', unsafe_allow_html=True)
         m = stats.get("measured", {})
+
+        def _ms(m, *keys):
+            """Return float ms from the first matching key in dict m."""
+            for key in keys:
+                if key in m:
+                    try: return float(m[key].replace("ms","").strip())
+                    except: pass
+            return 0.0
+
         timing_stages = [
-            ("Hashing",      m.get("Hashing","0 ms")),
-            ("Graph Build",  m.get("Graph Build","0 ms")),
-            ("Dijkstra",     m.get("Dijkstra","0 ms")),
-            ("Hierholzer",   m.get("Hierholzer","0 ms")),
-            ("DP Correct",   m.get("DP Correction","0 ms")),
-            ("SA + LCP",     m.get("Suffix Array+LCP","0 ms")),
+            ("Hashing",     _ms(m, "Hashing", "Hashing Time")),
+            ("Graph Build", _ms(m, "Graph Build", "Graph Build Time")),
+            ("Dijkstra",    _ms(m, "Dijkstra", "Dijkstra Time")),
+            ("Hierholzer",  _ms(m, "Hierholzer", "Traversal Time", "Hierholzer Time", "Traversal")),
+            ("DP Correct",  _ms(m, "DP Correction", "DP Time", "DP Correct")),
+            ("SA + LCP",    _ms(m, "Suffix Array+LCP", "SA Time", "SA+LCP Time", "Suffix Array")),
         ]
-        t_labels, t_vals = [], []
-        for label, raw in timing_stages:
-            t_labels.append(label)
-            try:   t_vals.append(float(raw.replace("ms","").strip()))
-            except: t_vals.append(0.0)
+        t_labels = [s[0] for s in timing_stages]
+        t_vals   = [s[1] for s in timing_stages]
 
         colors_bar = ["#00f0ff","#cc00ff","#ff0088","#00ff99","#ff6d00","#ffe600"]
         fig_bar = go.Figure(go.Bar(
@@ -872,7 +885,7 @@ with tab_results:
             plot_bgcolor="rgba(3,0,18,.6)")
         st.plotly_chart(fig_bar, use_container_width=True)
 
-        total_t = m.get("Total","—")
+        total_t = m.get("Total", m.get("Total Time", "—"))
         st.markdown(
             f'<div class="overall-badge">'
             f'<span class="overall-label">Total wall time</span>'

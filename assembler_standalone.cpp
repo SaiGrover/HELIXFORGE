@@ -37,9 +37,9 @@
 using namespace std;
 using namespace chrono;
 
-/* =========================================================
+/*  
    TIMING
-   ========================================================= */
+     */
 struct Timer {
     time_point<high_resolution_clock> t0;
     void start() { t0 = high_resolution_clock::now(); }
@@ -48,13 +48,13 @@ struct Timer {
     }
 };
 
-/* =========================================================
+/*  
    REVERSE COMPLEMENT — canonical k-mer representation
    Used in Pass 1 (frequency counting) so k-mers that only
    appear on the reverse strand still meet the solid threshold.
    NOT used to add edges to the graph (would create symmetric
    back-edges → artificial full-graph Eulerian circuits).
-   ========================================================= */
+     */
 string rev_comp(const string& s) {
     string r; r.reserve(s.size());
     for (int i = (int)s.size()-1; i >= 0; --i) {
@@ -67,10 +67,10 @@ string rev_comp(const string& s) {
     return r;
 }
 
-/* =========================================================
+/*  
    ROLLING HASH — Rabin-Karp  O(1) per k-mer
    Mersenne prime MOD = 2^61-1 avoids overflow via __uint128_t.
-   ========================================================= */
+     */
 class RollingHash {
     static constexpr uint64_t BASE = 5;
     static constexpr uint64_t MOD  = (1ULL << 61) - 1;
@@ -104,13 +104,13 @@ public:
     uint64_t value() const { return hv; }
 };
 
-/* =========================================================
+/*  
    BLOOM FILTER — O(1) insert/query, ~8 MB
    Two-filter scheme: only add to graph if seen at least twice.
    Kept as a reference implementation. The pipeline currently
    uses an exact frequency counter (see Pass 1 in main) which
    provides threshold=3 needed for ONT sequencing error rates.
-   ========================================================= */
+     */
 class BloomFilter {
     static constexpr size_t BITS = 1ULL << 26;
     vector<uint8_t> b;
@@ -137,12 +137,12 @@ public:
     }
 };
 
-/* =========================================================
+/*  
    DE BRUIJN GRAPH — adjacency list
    Node  = (k-1)-mer
    Edge  = k-mer
    edge_freq[u->v] = number of reads supporting that transition.
-   ========================================================= */
+     */
 struct Graph {
     unordered_map<string, vector<string>> adj;
     unordered_map<string, int> indeg, outdeg;
@@ -190,10 +190,10 @@ struct Graph {
     }
 };
 
-/* =========================================================
+/*  
    HIERHOLZER — Eulerian path  O(E)
    Visits every edge exactly once → longest possible assembly.
-   ========================================================= */
+     */
 vector<string> hierholzer(Graph& g) {
     string s = g.start_node();
     if (s.empty()) return {};
@@ -218,14 +218,14 @@ vector<string> hierholzer(Graph& g) {
     return circuit;
 }
 
-/* =========================================================
+/*  
    DIJKSTRA — Coverage-Weighted Assembly  O((V+E) log V)
    Edge weight  = (max_freq + 1) - freq(u,v)
                 → high-coverage edges get low cost → Dijkstra
                   naturally selects the best-supported path.
    Returns the assembled sequence along the minimum-cost
    (= maximum-coverage) path from source to sink.
-   ========================================================= */
+     */
 string dijkstra_assemble(const Graph& g) {
     if (g.adj.empty()) return "";
 
@@ -296,7 +296,7 @@ string dijkstra_assemble(const Graph& g) {
     return seq;
 }
 
-/* =========================================================
+/*  
    MULTI-START GREEDY — coverage-weighted longest-path assembly
 
    Why this works when Hierholzer/Dijkstra give 1 k-mer:
@@ -313,7 +313,7 @@ string dijkstra_assemble(const Graph& g) {
 
    Using a GLOBAL used-edge set means independent runs each explore
    fresh territory — together they cover the whole graph.
-   ========================================================= */
+     */
 string multi_greedy_assemble(Graph& g, int top_n = 80) {
     if (g.adj.empty()) return "";
 
@@ -365,11 +365,11 @@ string greedy_assemble(Graph& g) {
     return multi_greedy_assemble(g, 1);
 }
 
-/* =========================================================
+/*  
    DP ERROR CORRECTION — sliding window majority vote  O(N)
    Fixes isolated single-base mismatches where both immediate
    neighbours agree (classic sequencing substitution error).
-   ========================================================= */
+     */
 string dp_correct(const string& seq) {
     string res = seq;
     for (int i = 1; i < (int)seq.size()-1; i++) {
@@ -379,9 +379,9 @@ string dp_correct(const string& seq) {
     return res;
 }
 
-/* =========================================================
+/*  
    GENOME METRICS
-   ========================================================= */
+     */
 double gc_content(const string& s) {
     if (s.empty()) return 0.0;
     int gc = 0;
@@ -409,7 +409,7 @@ long long n50(const string& seq) {
     return contigs.back();
 }
 
-/* =========================================================
+/*  
    SUFFIX ARRAY — prefix-doubling  O(n log² n)
 
    Algorithm outline (Manber & Myers style):
@@ -419,7 +419,7 @@ long long n50(const string& seq) {
       ordering built in the previous round.
       Recompute rank[] from the new sorted order.
       Stop early once all ranks are distinct.
-   ========================================================= */
+     */
 vector<int> build_suffix_array(const string& s) {
     int n = (int)s.size();
     if (n == 0) return {};
@@ -450,14 +450,14 @@ vector<int> build_suffix_array(const string& s) {
     return sa;
 }
 
-/* =========================================================
+/*  
    LCP ARRAY — Kasai's algorithm  O(n)
 
    Uses the inverse SA (rank array) to compute LCP in linear
    time by extending each match from the previous comparison.
    The key invariant: LCP drops by at most 1 per character,
    so h never decreases more than n times overall.
-   ========================================================= */
+     */
 vector<int> build_lcp(const string& s, const vector<int>& sa) {
     int n = (int)s.size();
     vector<int> rank_(n), lcp(n, 0);
@@ -475,7 +475,7 @@ vector<int> build_lcp(const string& s, const vector<int>& sa) {
     return lcp;
 }
 
-/* =========================================================
+/*  
    REPEAT FINDER — LCP array scan
 
    Two consecutive SA entries with LCP[i] >= min_len share a
@@ -483,7 +483,7 @@ vector<int> build_lcp(const string& s, const vector<int>& sa) {
    repeated substring.  We group maximal runs of high-LCP
    entries into "repeat regions", extract the shared pattern,
    and record all occurrence positions.
-   ========================================================= */
+     */
 struct RepeatRegion {
     string  pattern;      // the repeated substring
     int     length;       // length of shared prefix
@@ -535,10 +535,10 @@ vector<RepeatRegion> find_repeats(const string& s,
     return result;
 }
 
-/* =========================================================
+/*  
    FASTQ STREAMING READER — O(N)
    Reads every 4th line (sequence line), normalises to ACGT.
-   ========================================================= */
+     */
 vector<string> read_fastq(const string& path, long long& nr) {
     ifstream f(path);
     if (!f) { cerr << "Cannot open " << path << "\n"; return {}; }
@@ -559,11 +559,11 @@ vector<string> read_fastq(const string& path, long long& nr) {
     return reads;
 }
 
-/* =========================================================
+/*  
    JSON WRITER (manual, no external deps)
    Writes graph nodes, edges, and edge frequencies for
    the front-end visualiser.
-   ========================================================= */
+     */
 string escape_json(const string& s) {
     string o; o.reserve(s.size()+2);
     o += '"';
@@ -582,9 +582,11 @@ string escape_json(const string& s) {
 // can highlight the assembly backbone in a distinct colour.
 void write_graph_json(const string& path, const Graph& g,
                       const string& seq, int k) {
-    const int MAX_NODES = 400, MAX_EDGES = 3000;
+    const int MAX_BRANCH = 60,   // max branch nodes shown (path-adjacent only)
+              MAX_EXTRA  = 40,   // max tip/other neighbours of path nodes
+              MAX_EDGES  = 2000;
 
-    // ── 1. Extract assembly path nodes in sequence order ──────────────────
+    // ── 1. Extract assembly path nodes in strict sequence order ──────────
     vector<string> path_ordered;
     unordered_set<string> path_set;
     if (!seq.empty() && (int)seq.size() >= k - 1) {
@@ -597,16 +599,21 @@ void write_graph_json(const string& path, const Graph& g,
         }
     }
 
-    // ── 2. Identify branch nodes (combined degree > 2) ────────────────────
-    unordered_set<string> branch_set;
-    for (auto& [n, od] : g.outdeg) {
-        int id = g.indeg.count(n) ? g.indeg.at(n) : 0;
-        if (od + id > 2) branch_set.insert(n);
+    // ── 2. Identify branch nodes directly adjacent to path ────────────────
+    //    Only show branches that touch the assembled backbone — random
+    //    branch nodes elsewhere just add unanchored orange clutter.
+    unordered_set<string> path_adj;   // neighbours of path nodes
+    for (auto& pn : path_ordered) {
+        if (!g.adj.count(pn)) continue;
+        for (auto& nb : g.adj.at(pn))
+            if (!path_set.count(nb)) path_adj.insert(nb);
     }
 
-    // ── 3. Build selected node map with roles ─────────────────────────────
-    unordered_map<string, string> node_role;  // id → "path"|"branch"|"tip"|"other"
+    // ── 3. Build ordered node list: path → path-adjacent branches → tips ──
+    unordered_map<string, string> node_role;
     unordered_map<string, int>    node_cov;
+    // We use a vector to preserve path ordering (unordered_map loses it)
+    vector<string> node_list;
 
     auto add_node = [&](const string& n, const string& role) {
         if (node_role.count(n) || !g.adj.count(n)) return;
@@ -617,48 +624,52 @@ void write_graph_json(const string& path, const Graph& g,
             cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
         }
         node_cov[n] = cov;
+        node_list.push_back(n);
     };
 
-    for (auto& n : path_ordered)  { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "path"); }
-    for (auto& n : branch_set)    { if ((int)node_role.size() >= MAX_NODES) break; add_node(n, "branch"); }
+    // Priority 1 — path nodes in sequence order (these drive the helix layout)
+    for (auto& n : path_ordered) add_node(n, "path");
 
-    // Immediate neighbours of path nodes (shows branching off the backbone)
-    for (auto& n : path_ordered) {
-        if ((int)node_role.size() >= MAX_NODES) break;
-        if (!g.adj.count(n)) continue;
-        for (auto& nb : g.adj.at(n)) {
-            if ((int)node_role.size() >= MAX_NODES) break;
-            int od = g.outdeg.count(nb) ? g.outdeg.at(nb) : 0;
-            add_node(nb, od == 0 ? "tip" : "other");
+    // Priority 2 — high-coverage path-adjacent branch nodes (capped at MAX_BRANCH)
+    vector<pair<int,string>> branch_cands;
+    for (auto& n : path_adj) {
+        int od = g.outdeg.count(n) ? g.outdeg.at(n) : 0;
+        int id = g.indeg.count(n)  ? g.indeg.at(n)  : 0;
+        if (od + id > 2) {
+            int cov = 0;
+            for (auto& nb : g.adj.at(n)) {
+                string key = n + "->" + nb;
+                cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
+            }
+            branch_cands.push_back({cov, n});
         }
     }
-
-    // Fill remaining slots with highest-coverage nodes
-    vector<pair<int,string>> cov_fill;
-    for (auto& [n, _] : g.adj) {
-        if (node_role.count(n)) continue;
-        int cov = 0;
-        for (auto& nb : g.adj.at(n)) {
-            string key = n + "->" + nb;
-            cov += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
-        }
-        cov_fill.push_back({cov, n});
+    sort(branch_cands.rbegin(), branch_cands.rend());
+    int bc = 0;
+    for (auto& [cov, n] : branch_cands) {
+        if (bc++ >= MAX_BRANCH) break;
+        add_node(n, "branch");
     }
-    sort(cov_fill.rbegin(), cov_fill.rend());
-    for (auto& [cov, n] : cov_fill) {
-        if ((int)node_role.size() >= MAX_NODES) break;
-        add_node(n, "other");
+
+    // Priority 3 — remaining path-adjacent non-branch nodes (tips/others, capped)
+    int ec = 0;
+    for (auto& n : path_adj) {
+        if (ec >= MAX_EXTRA) break;
+        int od = g.outdeg.count(n) ? g.outdeg.at(n) : 0;
+        if (od + g.indeg.count(n) ? g.indeg.at(n) : 0 <= 2) {
+            add_node(n, od == 0 ? "tip" : "other");
+            ec++;
+        }
     }
 
     // ── 4. Collect edges between selected nodes ───────────────────────────
-    // Build set of consecutive path-node pairs for on_path tagging
     unordered_set<string> path_edge_set;
     for (int i = 0; i + 1 < (int)path_ordered.size(); ++i)
         path_edge_set.insert(path_ordered[i] + "->" + path_ordered[i+1]);
 
     struct SelEdge { string u, v; int w; bool on_path; };
     vector<SelEdge> sel_edges;
-    for (auto& [n, role] : node_role) {
+    for (auto& n : node_list) {
         if (!g.adj.count(n)) continue;
         for (auto& nb : g.adj.at(n)) {
             if (!node_role.count(nb)) continue;
@@ -670,36 +681,36 @@ void write_graph_json(const string& path, const Graph& g,
     }
     done_collecting:;
 
-    // ── 5. Write JSON ─────────────────────────────────────────────────────
+    // ── 5. Write JSON — path nodes first (preserves helix order) ─────────
     ofstream f(path);
     f << "{\n  \"nodes\": [\n";
     bool first = true;
-    for (auto& [n, role] : node_role) {
+    for (auto& n : node_list) {
         if (!first) f << ",\n";
-        f << "    {\"id\":"       << escape_json(n)
-          << ",\"role\":"         << escape_json(role)
-          << ",\"coverage\":"     << node_cov[n] << "}";
+        f << "    {\"id\":"      << escape_json(n)
+          << ",\"role\":"        << escape_json(node_role[n])
+          << ",\"coverage\":"    << node_cov[n] << "}";
         first = false;
     }
     f << "\n  ],\n  \"edges\": [\n";
     first = true;
     for (auto& e : sel_edges) {
         if (!first) f << ",\n";
-        f << "    {\"from\":"   << escape_json(e.u)
-          << ",\"to\":"         << escape_json(e.v)
-          << ",\"weight\":"     << e.w
-          << ",\"on_path\":"    << (e.on_path ? "true" : "false") << "}";
+        f << "    {\"from\":"  << escape_json(e.u)
+          << ",\"to\":"        << escape_json(e.v)
+          << ",\"weight\":"    << e.w
+          << ",\"on_path\":"   << (e.on_path ? "true" : "false") << "}";
         first = false;
     }
     f << "\n  ],\n";
-    f << "  \"total_nodes\": "      << g.V()                 << ",\n";
-    f << "  \"total_edges\": "      << g.E()                 << ",\n";
-    f << "  \"path_node_count\": "  << path_ordered.size()   << "\n}\n";
+    f << "  \"total_nodes\": "     << g.V()               << ",\n";
+    f << "  \"total_edges\": "     << g.E()               << ",\n";
+    f << "  \"path_node_count\": " << path_ordered.size() << "\n}\n";
 }
 
-/* =========================================================
+/*  
    REPEAT REPORT WRITER
-   ========================================================= */
+     */
 void write_repeat_report(const string& path,
                           const vector<RepeatRegion>& repeats,
                           const string& seq,
@@ -746,9 +757,9 @@ void write_repeat_report(const string& path,
     }
 }
 
-/* =========================================================
+/*  
    MAIN — 7-stage pipeline
-   ========================================================= */
+     */
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         cerr << "Usage: assembler <input.fastq> <k> <output_dir>\n";

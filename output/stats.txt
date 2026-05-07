@@ -1,21 +1,43 @@
-Total Reads Processed: 18357
-Total k-mers: 3740739
-Graph Nodes (V): 343743
-Graph Edges (E): 1784973
-Assembly Length: 21 bp
-k-mer size: 21
+=== HelixForge Assembly Statistics ===
 
-Time Complexity (Theoretical):
-  - Rolling Hash:        O(N)       - one hash update per character
-  - Bloom Filter:        O(N)       - constant-time insert/query per k-mer
-  - Graph Construction:  O(V + E)   - adjacency list insertion
-  - Traversal:           O(E)       - Hierholzer visits each edge once
-  - DP Correction:       O(n*m)     - LCS over sliding windows
-  Overall:               O(N + V + E)
+Input
+  Reads processed   : 13853
+  Total k-mers      : 2929687
+  k-mer size (k)    : 21
 
-Execution Time (Measured):
-  Total Time:            4835.46 ms
-  Hashing Time:          231.416 ms
-  Graph Build Time:      4023.13 ms
-  Traversal Time:        377.795 ms
-  DP Time:               0.0132 ms
+Graph
+  Nodes (V)         : 306452
+  Edges (E)         : 214494
+
+Assembly
+  Method selected   : Hierholzer (Eulerian)
+  Dijkstra length   : 21 bp
+  Hierholzer length : 21 bp
+  Final length      : 21 bp
+  GC content        : 57.14 %
+  N50               : 21 bp
+
+Repeat Analysis (Suffix Array + LCP)
+  Min repeat length : 21 bp
+  Repeat regions    : 0
+
+Time Complexity (Theoretical)
+  Rolling Hash      : O(N)           one slide per character
+  Bloom Filter      : O(N)           constant insert/query
+  Graph Build       : O(V + E)       adjacency list
+  Dijkstra          : O((V+E) log V) min-heap relaxation
+  Hierholzer        : O(E)            each edge visited once
+  DP Correction     : O(N)           single pass
+  Suffix Array      : O(n log² n)    prefix doubling
+  LCP Array         : O(n)           Kasai's algorithm
+  Repeat Finding    : O(n)           LCP scan
+  Overall           : O(N + (V+E) log V + n log² n)
+
+Execution Time (Measured)
+  Total             : 4037.21 ms
+  Hashing           : 550.48 ms
+  Graph Build       : 2771.54 ms
+  Dijkstra          : 332.95 ms
+  Hierholzer        : 295.12 ms
+  DP Correction     : 0.00 ms
+  Suffix Array+LCP  : 0.04 ms

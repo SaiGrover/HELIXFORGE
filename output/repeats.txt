@@ -1,0 +1,7 @@
+HelixForge — Repeat Analysis Report
+============================================================
+Assembly length : 21 bp
+Min repeat len  : 21 bp
+Repeats found   : 0
+
+No repeats found at this threshold.

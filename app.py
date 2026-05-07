@@ -333,6 +333,40 @@ pre, code { background: #050018 !important; color: var(--green) !important; font
 .kmer-info-item { color:var(--muted); }
 .kmer-info-item span { color:var(--purple); font-weight:700; }
 
+/* Verification card */
+.verify-card {
+  background: rgba(0,255,153,.03);
+  border: 1px solid rgba(0,255,153,.2);
+  border-radius: 12px;
+  padding: 1.2rem 1.4rem;
+  margin: .6rem 0 1rem;
+}
+.verify-title {
+  font-family:'Orbitron',monospace; font-size:.68rem; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase; margin-bottom:.9rem;
+}
+.verify-row {
+  display:flex; align-items:center; gap:.8rem;
+  padding:.45rem 0; border-bottom:1px solid rgba(255,255,255,.04);
+  font-family:'Space Mono',monospace; font-size:.76rem;
+}
+.verify-row:last-child { border-bottom:none; }
+.verify-label { color:var(--muted); width:130px; flex-shrink:0; }
+.verify-bar-wrap { flex:1; height:6px; background:rgba(255,255,255,.06); border-radius:3px; overflow:hidden; }
+.verify-bar { height:100%; border-radius:3px; transition:width .6s ease; }
+.verify-status { font-size:.7rem; font-weight:700; letter-spacing:.06em; white-space:nowrap; }
+.verify-val { color:#fff; width:80px; text-align:right; flex-shrink:0; }
+.blast-btn {
+  display:inline-flex; align-items:center; gap:.45rem;
+  background: rgba(0,240,255,.06);
+  border: 1px solid rgba(0,240,255,.3);
+  border-radius:7px; padding:.5rem 1rem;
+  font-family:'Space Mono',monospace; font-size:.72rem;
+  color:var(--cyan); text-decoration:none; margin-top:.5rem;
+  transition: all .25s;
+}
+.blast-btn:hover { background:rgba(0,240,255,.12); border-color:var(--cyan); }
+
 /* Repeat card */
 .repeat-card {
   background: rgba(255,109,0,.04);
@@ -808,6 +842,136 @@ with tab_results:
         kpi_html("N50",       stats["n50"],          "bp",     "var(--teal)"),
     ]
     st.markdown(f'<div class="kpi-grid">{"".join(kpis)}</div>', unsafe_allow_html=True)
+
+    # ── Genome Verification panel ─────────────────────────────────────────────
+    st.markdown('<div class="hf-section">Genome Verification</div>', unsafe_allow_html=True)
+
+    def verify_gc(gc_str):
+        """Return (value, bar_pct, color, status, note) for GC content."""
+        try:
+            v = float(gc_str)
+        except:
+            return None, 0, "#555", "NO DATA", "Run assembly first"
+        # Typical plant/fungal ITS2/rbcL range 40-65 %
+        if 40 <= v <= 65:
+            color, status = "#00ff99", "✓ NORMAL"
+        elif 30 <= v < 40 or 65 < v <= 75:
+            color, status = "#ffe600", "⚠ BORDERLINE"
+        else:
+            color, status = "#ff0088", "✗ UNUSUAL"
+        note = ("Typical range for plant/fungal barcodes is 40–65 %. "
+                "Values outside this can mean contamination or very GC-rich organisms.")
+        return v, min(v, 100), color, status, note
+
+    def verify_n50(n50_str, asm_len_str):
+        """Return (n50_val, asm_len, quality_str, color, note)."""
+        try:
+            n50 = int(n50_str)
+        except:
+            return None, None, "NO DATA", "#555", ""
+        try:
+            alen = int(asm_len_str)
+        except:
+            alen = n50
+        ratio = n50 / alen if alen > 0 else 0
+        if ratio >= 0.5:
+            color, quality = "#00ff99", "✓ GOOD"
+        elif ratio >= 0.2:
+            color, quality = "#ffe600", "⚠ FRAGMENTED"
+        else:
+            color, quality = "#ff0088", "✗ HIGHLY FRAGMENTED"
+        note = ("N50 = the length L where contigs ≥ L cover half the assembly. "
+                "Close to assembly length = mostly one long contig (ideal). "
+                "Much smaller = assembly is broken into many short pieces.")
+        return n50, alen, quality, color, note
+
+    gc_val, gc_bar, gc_color, gc_status, gc_note = verify_gc(stats["gc"])
+    n50_v, alen_v, n50_quality, n50_color, n50_note = verify_n50(stats["n50"], stats["final_len"])
+
+    # Build blast URL from assembled sequence
+    blast_seq = sequence[:500] if sequence else ""
+    import urllib.parse
+    blast_url = ("https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi?"
+                 "PAGE_TYPE=BlastSearch&PROGRAM=blastn&DATABASE=nt"
+                 f"&QUERY={urllib.parse.quote(blast_seq)}&CMD=Put") if blast_seq else ""
+
+    gc_display  = f"{gc_val:.2f} %" if gc_val is not None else "—"
+    n50_display = f"{n50_v} bp"     if n50_v  is not None else "—"
+
+    st.markdown(f"""
+    <div class="verify-card">
+      <div class="verify-title" style="color:var(--green)">🔍 Assembly Quality Checks</div>
+
+      <div class="verify-row">
+        <div class="verify-label">GC Content</div>
+        <div class="verify-bar-wrap">
+          <div class="verify-bar" style="width:{gc_bar}%;background:{gc_color};box-shadow:0 0 6px {gc_color}60"></div>
+        </div>
+        <div class="verify-val">{gc_display}</div>
+        <div class="verify-status" style="color:{gc_color}">{gc_status}</div>
+      </div>
+      <div style="font-family:Space Mono,monospace;font-size:.64rem;color:var(--muted);
+                  padding:.15rem 0 .55rem 130px;line-height:1.5">{gc_note}</div>
+
+      <div class="verify-row">
+        <div class="verify-label">N50 Score</div>
+        <div class="verify-bar-wrap">
+          <div class="verify-bar" style="width:{min((n50_v or 0)/(alen_v or 1)*100,100):.1f}%;
+               background:{n50_color};box-shadow:0 0 6px {n50_color}60"></div>
+        </div>
+        <div class="verify-val">{n50_display}</div>
+        <div class="verify-status" style="color:{n50_color}">{n50_quality}</div>
+      </div>
+      <div style="font-family:Space Mono,monospace;font-size:.64rem;color:var(--muted);
+                  padding:.15rem 0 .55rem 130px;line-height:1.5">{n50_note}</div>
+
+      <div class="verify-row">
+        <div class="verify-label">Assembly Length</div>
+        <div class="verify-bar-wrap" style="background:transparent"></div>
+        <div class="verify-val">{stats["final_len"]} bp</div>
+        <div class="verify-status" style="color:var(--muted)">
+          {'✓ >200 bp' if (alen_v or 0) >= 200 else '⚠ SHORT — increase coverage or lower k'}
+        </div>
+      </div>
+      <div style="font-family:Space Mono,monospace;font-size:.64rem;color:var(--muted);
+                  padding:.15rem 0 .55rem 130px;line-height:1.5">
+        ITS2 barcodes ≈ 200–500 bp · rbcL ≈ 550 bp · 18S ≈ 1800 bp.
+        Short assemblies usually mean k is too large relative to read coverage — try lowering k.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # BLAST + tips row
+    vcol1, vcol2 = st.columns([1, 1])
+    with vcol1:
+        if blast_url and blast_seq:
+            st.markdown(
+                f'<a class="blast-btn" href="{blast_url}" target="_blank">'
+                f'🔗 BLAST this sequence on NCBI</a>'
+                f'<div style="font-family:Space Mono,monospace;font-size:.62rem;'
+                f'color:var(--muted);margin-top:.35rem">'
+                f'Opens NCBI BLASTn with your assembly — shows the closest matching organism in the database.</div>',
+                unsafe_allow_html=True)
+    with vcol2:
+        with st.expander("💡 How to improve assembly quality"):
+            st.markdown("""
+**If assembly is too short (< 200 bp):**
+- Lower k (try 15–19 for short-read data)
+- Check the FASTQ has enough reads (ideally 1000+)
+- The Bloom filter needs each k-mer seen ≥2× — higher coverage helps
+
+**If GC content is unusual (< 30% or > 75%):**
+- May indicate adapter contamination in your FASTQ
+- Try filtering reads with quality < Q10 before assembling
+
+**How to verify your assembly is biologically correct:**
+1. Click BLAST → see if top hit matches your expected organism
+2. Compare assembly length to known gene lengths for your marker (ITS2, rbcL, etc.)
+3. GC content should roughly match known values for your species group
+4. If N50 ≈ assembly length → assembly is one clean contig ✓
+            """)
+
+    st.markdown('<div class="hf-divider"></div>', unsafe_allow_html=True)
 
     # ── Method + Dijkstra vs Hierholzer comparison ────────────────────────────
     method_color = "var(--cyan)" if "Hierholzer" in stats["method"] else "var(--purple)"

@@ -511,7 +511,7 @@ def parse_stats(path: Path) -> dict:
             data["measured"][k_str] = v_str
         else:
             if   "reads processed"   in kl: data["reads"]          = v_str
-            elif "total k-mer"       in kl: data["total_kmers"]    = v_str
+            elif "total k-mer"       in kl or "unique k-mer" in kl: data["total_kmers"] = v_str
             elif "k-mer size"        in kl or "kmer size" in kl: data["kmer_size"] = v_str
             elif "nodes (v)"         in kl or "graph nodes" in kl: data["nodes"]   = v_str
             elif "edges (e)"         in kl or "graph edges" in kl: data["edges"]   = v_str
@@ -852,18 +852,20 @@ with tab_results:
             v = float(gc_str)
         except:
             return None, 0, "#555", "NO DATA", "Run assembly first"
-        # Typical plant/fungal ITS2/rbcL range 40-65 %
-        if 40 <= v <= 65:
+        # Broad range covers all common plant barcodes:
+        # rbcL/MATK/trnL: 33-48%   ITS2/18S: 45-65%
+        if 33 <= v <= 65:
             color, status = "#00ff99", "✓ NORMAL"
-        elif 30 <= v < 40 or 65 < v <= 75:
+        elif 25 <= v < 33 or 65 < v <= 75:
             color, status = "#ffe600", "⚠ BORDERLINE"
         else:
             color, status = "#ff0088", "✗ UNUSUAL"
-        note = ("Typical range for plant/fungal barcodes is 40–65 %. "
-                "Values outside this can mean contamination or very GC-rich organisms.")
+        note = ("GC ranges by marker: ITS2 ≈ 45–60% · 18S ≈ 50–60% · "
+                "rbcL ≈ 33–45% · MATK ≈ 35–48% · trnL ≈ 33–42% · psbA3 ≈ 35–45%. "
+                "Values below 30% or above 75% often indicate contamination or adapter sequence.")
         return v, min(v, 100), color, status, note
 
-    def verify_n50(n50_str, asm_len_str):
+    def verify_n50(n50_str, asm_len_str, kmer_size_str):
         """Return (n50_val, asm_len, quality_str, color, note)."""
         try:
             n50 = int(n50_str)
@@ -873,25 +875,31 @@ with tab_results:
             alen = int(asm_len_str)
         except:
             alen = n50
+        try:
+            k_used = int(kmer_size_str)
+        except:
+            k_used = 21
         ratio = n50 / alen if alen > 0 else 0
-        # A "good" ratio means nothing if the assembly itself is too short.
-        # Flag as TRIVIAL if the absolute assembly length is <= k (one k-mer = no real assembly).
-        if alen <= 100:
+        # Flag as TRIVIAL only if assembly == 1 k-mer (alen <= k)
+        if alen <= k_used:
             color   = "#ff0088"
             quality = "✗ TRIVIAL — assembly = 1 k-mer, lower k or increase coverage"
         elif ratio >= 0.5 and alen >= 200:
             color, quality = "#00ff99", "✓ GOOD"
+        elif ratio >= 0.5:
+            color, quality = "#ffe600", "⚠ SHORT but contiguous — try lower k for more length"
         elif ratio >= 0.2:
             color, quality = "#ffe600", "⚠ FRAGMENTED"
         else:
             color, quality = "#ff0088", "✗ HIGHLY FRAGMENTED"
         note = ("N50 = the length L where contigs ≥ L cover at least half the assembly. "
-                "If N50 ≈ assembly length that looks good — but only if the assembly is long enough to be meaningful. "
-                "If both N50 and assembly length are tiny (≤ k bp), the assembler found no path — lower k.")
+                "N50 = assembly length means one clean contig. "
+                "Short assemblies on ONT data: try k=17–21. "
+                "Very low N50 relative to length = many tiny fragments.")
         return n50, alen, quality, color, note
 
     gc_val, gc_bar, gc_color, gc_status, gc_note = verify_gc(stats["gc"])
-    n50_v, alen_v, n50_quality, n50_color, n50_note = verify_n50(stats["n50"], stats["final_len"])
+    n50_v, alen_v, n50_quality, n50_color, n50_note = verify_n50(stats["n50"], stats["final_len"], stats["kmer_size"])
 
     # Build blast URL from assembled sequence
     blast_seq = sequence[:500] if sequence else ""
@@ -909,8 +917,12 @@ with tab_results:
     except:
         kmer_size_int = 0
     asm_len_int = alen_v or 0
-    gc_ok  = gc_val is not None and 30 <= gc_val <= 75
+    gc_ok  = gc_val is not None and 25 <= gc_val <= 75
     asm_ok = asm_len_int >= 200
+
+    # GC ranges: rbcL/trnL ~33-45%, ITS2 ~45-60%, 18S ~50-60%, MATK ~35-48%
+    gc_borderline = gc_val is not None and (30 <= gc_val < 40 or 65 < gc_val <= 75)
+    gc_unusual    = gc_val is not None and (gc_val < 30 or gc_val > 75)
 
     if asm_ok and gc_ok:
         verdict_color = "#00ff99"
@@ -920,15 +932,27 @@ with tab_results:
         verdict_color = "#ff0088"
         verdict_icon  = "❌"
         verdict_text  = (f"TRIVIAL ASSEMBLY — output is just one {kmer_size_int}-bp k-mer. "
-                         f"Lower k to 15–19 in the sidebar and re-run.")
+                         f"Lower k to 17–19 in the sidebar and re-run.")
+    elif not asm_ok and gc_borderline:
+        verdict_color = "#ffe600"
+        verdict_icon  = "⚠️"
+        verdict_text  = (f"PARTIAL ASSEMBLY ({asm_len_int} bp) with borderline GC ({gc_val:.1f}%). "
+                         f"GC 33–45% is normal for rbcL/MATK/trnL markers. "
+                         f"Try k=17–19 for a longer assembly.")
     elif not asm_ok:
         verdict_color = "#ffe600"
         verdict_icon  = "⚠️"
-        verdict_text  = "SHORT ASSEMBLY — may be fragmented. Try lowering k or using a file with more reads."
+        verdict_text  = (f"PARTIAL ASSEMBLY ({asm_len_int} bp) — try k=17–19 for more length. "
+                         f"Assembly is real but shorter than the full gene.")
+    elif gc_unusual:
+        verdict_color = "#ff0088"
+        verdict_icon  = "❌"
+        verdict_text  = "UNUSUAL GC CONTENT — likely adapter contamination or wrong organism. Check your FASTQ source."
     else:
         verdict_color = "#ffe600"
         verdict_icon  = "⚠️"
-        verdict_text  = "UNUSUAL GC CONTENT — check for adapter contamination or verify organism GC range."
+        verdict_text  = (f"BORDERLINE GC ({gc_val:.1f}%). "
+                         f"Normal for rbcL (33–45%) and MATK (35–48%). BLAST to confirm.")
 
     st.markdown(
         f'<div style="background:rgba(255,255,255,.03);border:1px solid {verdict_color}40;'
@@ -969,16 +993,18 @@ with tab_results:
         <div class="verify-label">Assembly Length</div>
         <div class="verify-bar-wrap" style="background:transparent"></div>
         <div class="verify-val">{stats["final_len"]} bp</div>
-        <div class="verify-status" style="color:{'#00ff99' if (alen_v or 0) >= 200 else '#ff0088'}">
+        <div class="verify-status" style="color:{'#00ff99' if (alen_v or 0) >= 200 else ('#ff0088' if (alen_v or 0) <= kmer_size_int else '#ffe600')}">
           {'✓ Meaningful assembly' if (alen_v or 0) >= 200
-           else f'✗ = 1 k-mer only (k={stats["kmer_size"]}) — lower k to 15–19'}
+           else ('✗ Trivial — only 1 k-mer assembled, lower k' if (alen_v or 0) <= kmer_size_int
+                 else f'⚠ Partial assembly — {alen_v} bp (try k=17–19 for longer result)')}
         </div>
       </div>
       <div style="font-family:Space Mono,monospace;font-size:.64rem;color:var(--muted);
                   padding:.15rem 0 .55rem 130px;line-height:1.5">
         Expected lengths: ITS2 ≈ 200–500 bp · rbcL ≈ 550 bp · 18S ≈ 1800 bp · MATK ≈ 900 bp · psbA3 ≈ 450 bp.<br>
-        If length = k, the graph found no multi-edge path. <strong style="color:#ffe600">Lower k in the sidebar slider.</strong>
-        Good starting values: k=15 for low-coverage reads, k=19–21 for high-coverage (&gt;50×).
+        If length = k (e.g. 15 bp for k=15), no path found — lower k. &nbsp;
+        If 100–300 bp partial, try k=17–19 for better coverage.
+        Good values: <strong style="color:#ffe600">k=17–19</strong> for most ONT barcode files.
       </div>
     </div>
     """, unsafe_allow_html=True)

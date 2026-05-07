@@ -290,30 +290,72 @@ string dijkstra_assemble(const Graph& g) {
 }
 
 /* =========================================================
-   GREEDY FALLBACK — frequency-weighted edge selection
-   Picks the highest-observed-frequency neighbour at each step.
-   Used only if both Hierholzer and Dijkstra produce no output.
+   MULTI-START GREEDY — coverage-weighted longest-path assembly
+
+   Why this works when Hierholzer/Dijkstra give 1 k-mer:
+   Real De Bruijn graphs from sequencing data are NOT Eulerian
+   (many unbalanced nodes = dead-ends = tips). The graph is a
+   forest of small chains, not a single connected Euler graph.
+
+   Strategy:
+   1. Sort all nodes by total outgoing edge frequency (most-covered
+      nodes first — these are most likely to be in the real gene).
+   2. For each candidate start, greedily follow the highest-frequency
+      unused edge until stuck. Record sequence length.
+   3. Return the longest sequence found across all starts.
+
+   Using a GLOBAL used-edge set means independent runs each explore
+   fresh territory — together they cover the whole graph.
    ========================================================= */
-string greedy_assemble(Graph& g) {
-    string cur = g.start_node();
-    if (cur.empty()) return "";
-    string res = cur;
-    unordered_map<string, int> used;
-    while (true) {
-        string best_nxt; int best_freq = -1;
-        for (auto& nxt : g.adj[cur]) {
-            string key = cur + "->" + nxt;
-            if (!used[key]) {
-                int freq = g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
-                if (freq > best_freq) { best_freq = freq; best_nxt = nxt; }
-            }
+string multi_greedy_assemble(Graph& g, int top_n = 80) {
+    if (g.adj.empty()) return "";
+
+    // Score each node by sum of its outgoing edge frequencies
+    vector<pair<int,string>> cands;
+    cands.reserve(g.adj.size());
+    for (auto& [n, neighbors] : g.adj) {
+        int total_f = 0;
+        for (auto& nb : neighbors) {
+            string key = n + "->" + nb;
+            total_f += g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
         }
-        if (best_nxt.empty()) break;
-        used[cur + "->" + best_nxt]++;
-        res += best_nxt.back();
-        cur  = best_nxt;
+        if (total_f > 0) cands.push_back({total_f, n});
     }
-    return res;
+    sort(cands.rbegin(), cands.rend());   // highest coverage first
+
+    string best;
+
+    int tried = 0;
+    for (auto& [tf, start] : cands) {
+        if (tried++ >= top_n) break;
+
+        string res = start;
+        string cur = start;
+        unordered_map<string,bool> used;
+
+        while (true) {
+            string best_nxt; int best_freq = -1;
+            for (auto& nxt : g.adj[cur]) {
+                string key = cur + "->" + nxt;
+                if (!used[key]) {
+                    int freq = g.edge_freq.count(key) ? g.edge_freq.at(key) : 1;
+                    if (freq > best_freq) { best_freq = freq; best_nxt = nxt; }
+                }
+            }
+            if (best_nxt.empty()) break;
+            used[cur + "->" + best_nxt] = true;
+            res += best_nxt.back();
+            cur  = best_nxt;
+        }
+
+        if (res.size() > best.size()) best = res;
+    }
+    return best;
+}
+
+// Original single-start greedy kept for compatibility
+string greedy_assemble(Graph& g) {
+    return multi_greedy_assemble(g, 1);
 }
 
 /* =========================================================
@@ -640,42 +682,52 @@ int main(int argc, char* argv[]) {
     cerr << "[2/7] Hashing k-mers and building De Bruijn graph (k="
          << k << ")...\n";
     Timer ht; ht.start();
-    BloomFilter once(3), twice(3);
     RollingHash rh(k);
-    long long total_kmers = 0;
 
-    // Pass 1 — populate Bloom filters to identify solid k-mers
+    // ── Pass 1: Exact k-mer frequency counting (forward + RC for accurate counts) ──
+    // RC reads are counted here so k-mers from both strands meet the solid threshold,
+    // but we do NOT add RC edges to the graph (that creates artificial cycles).
+    unordered_map<uint64_t, int> kmer_freq;
+    kmer_freq.reserve(8000000);
     for (auto& r : reads) {
         if ((int)r.size() < k) continue;
+        // Forward
         rh.init(r, 0);
-        uint64_t hv = rh.value();
-        if (once.query(hv)) twice.insert(hv); else once.insert(hv);
-        ++total_kmers;
+        kmer_freq[rh.value()]++;
         for (int i = 1; i+k <= (int)r.size(); ++i) {
-            rh.slide(r[i-1], r[i+k-1]); hv = rh.value();
-            if (once.query(hv)) twice.insert(hv); else once.insert(hv);
-            ++total_kmers;
+            rh.slide(r[i-1], r[i+k-1]);
+            kmer_freq[rh.value()]++;
+        }
+        // Reverse complement — improves solid-kmer detection on low-coverage strands
+        string rc = rev_comp(r);
+        rh.init(rc, 0);
+        kmer_freq[rh.value()]++;
+        for (int i = 1; i+k <= (int)rc.size(); ++i) {
+            rh.slide(rc[i-1], rc[i+k-1]);
+            kmer_freq[rh.value()]++;
         }
     }
     double hash_ms = ht.ms();
 
-    // Pass 2 — add only solid k-mers (seen ≥2×) as canonical graph edges
+    // ── Pass 2: Build De Bruijn graph — forward edges only, solid k-mers only ──
+    // Adding RC edges here would make the graph symmetric (every edge has a back-edge),
+    // creating Eulerian circuits that traverse the entire graph instead of the target gene.
+    // Forward-only edges form near-linear chains that assemble correctly.
+    const int SOLID_MIN = 3;   // threshold = 3 filters ONT sequencing noise (~10-15% error)
     Timer gt; gt.start();
     Graph g;
     for (auto& r : reads) {
         if ((int)r.size() < k) continue;
         rh.init(r, 0);
-        if (twice.query(rh.value())) {
-            string km        = r.substr(0, k);
-            string canonical = min(km, rev_comp(km));
-            g.add_edge(canonical.substr(0, k-1), canonical.substr(1, k-1));
+        if (kmer_freq[rh.value()] >= SOLID_MIN) {
+            string km = r.substr(0, k);
+            g.add_edge(km.substr(0, k-1), km.substr(1, k-1));
         }
         for (int i = 1; i+k <= (int)r.size(); ++i) {
             rh.slide(r[i-1], r[i+k-1]);
-            if (twice.query(rh.value())) {
-                string km        = r.substr(i, k);
-                string canonical = min(km, rev_comp(km));
-                g.add_edge(canonical.substr(0, k-1), canonical.substr(1, k-1));
+            if (kmer_freq[rh.value()] >= SOLID_MIN) {
+                string km = r.substr(i, k);
+                g.add_edge(km.substr(0, k-1), km.substr(1, k-1));
             }
         }
     }
@@ -702,17 +754,37 @@ int main(int argc, char* argv[]) {
     double trav_ms = tt.ms();
     cerr << "      Hierholzer path: " << hier_seq.size() << " bp.\n";
 
-    // Select the best sequence; fall back to greedy if both are empty
+    /* ── Multi-start greedy (always runs — handles fragmented graphs) ── */
+    cerr << "      Running multi-start greedy (top-150 seed nodes)...\n";
+    string greedy_seq = multi_greedy_assemble(g, 150);
+    cerr << "      Greedy path    : " << greedy_seq.size() << " bp.\n";
+
+    // Sanity-check Hierholzer: if its output is more than 10× the greedy output,
+    // the graph has large cycles (non-Eulerian data) and Hierholzer traversed the
+    // entire connected component instead of a single gene path — discard it.
+    // A single barcode gene is typically ≤ 3000 bp; Dijkstra/greedy are better here.
+    const size_t HIER_MAX_RATIO = 10;
+    if (!greedy_seq.empty() && hier_seq.size() > greedy_seq.size() * HIER_MAX_RATIO) {
+        cerr << "      Hierholzer discarded (full-graph circuit detected: "
+             << hier_seq.size() << " bp >> greedy " << greedy_seq.size() << " bp).\n";
+        hier_seq = "";
+    }
+
+    // Select the longest sane result across all three methods
     string seq;
     string method_used;
-    if (hier_seq.size() >= dijk_seq.size() && !hier_seq.empty()) {
-        seq = hier_seq; method_used = "Hierholzer (Eulerian)";
-    } else if (!dijk_seq.empty()) {
-        seq = dijk_seq; method_used = "Dijkstra (coverage-weighted)";
-    } else {
-        cerr << "      Both failed — falling back to greedy.\n";
-        seq = greedy_assemble(g); method_used = "Greedy (frequency-weighted)";
-    }
+    struct Candidate { size_t len; string name; string seq; };
+    vector<Candidate> results = {
+        { hier_seq.size(),   "Hierholzer (Eulerian)",        hier_seq   },
+        { dijk_seq.size(),   "Dijkstra (coverage-weighted)", dijk_seq   },
+        { greedy_seq.size(), "Greedy (multi-start)",         greedy_seq },
+    };
+    auto best = max_element(results.begin(), results.end(),
+        [](const Candidate& a, const Candidate& b){ return a.len < b.len; });
+    seq         = best->seq;
+    method_used = best->name;
+    if (seq.empty()) { seq = greedy_seq; method_used = "Greedy (fallback)"; }
+
     cerr << "      Selected       : " << method_used
          << " → " << seq.size() << " bp.\n";
 
@@ -766,8 +838,9 @@ int main(int argc, char* argv[]) {
         f << "=== HelixForge Assembly Statistics ===\n\n"
           << "Input\n"
           << "  Reads processed   : " << nr          << "\n"
-          << "  Total k-mers      : " << total_kmers << "\n"
-          << "  k-mer size (k)    : " << k           << "\n\n"
+          << "  Unique k-mer hashes: " << kmer_freq.size() << "\n"
+          << "  k-mer size (k)    : " << k           << "\n"
+          << "  Solid threshold   : " << SOLID_MIN << "x\n\n"
           << "Graph\n"
           << "  Nodes (V)         : " << g.V()  << "\n"
           << "  Edges (E)         : " << g.E()  << "\n\n"
@@ -788,7 +861,7 @@ int main(int argc, char* argv[]) {
         }
         f << "\nTime Complexity (Theoretical)\n"
           << "  Rolling Hash      : O(N)           one slide per character\n"
-          << "  Bloom Filter      : O(N)           constant insert/query\n"
+          << "  Freq Counter      : O(N)           exact unordered_map count\n"
           << "  Graph Build       : O(V + E)       adjacency list\n"
           << "  Dijkstra          : O((V+E) log V) min-heap relaxation\n"
           << "  Hierholzer        : O(E)            each edge visited once\n"

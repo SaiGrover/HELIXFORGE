@@ -2,28 +2,30 @@
 
 Input
   Reads processed   : 13853
-  Total k-mers      : 2929687
-  k-mer size (k)    : 21
+  Unique k-mer hashes: 3094002
+  k-mer size (k)    : 19
+  Solid threshold   : 3x
 
 Graph
-  Nodes (V)         : 306452
-  Edges (E)         : 214494
+  Nodes (V)         : 114129
+  Edges (E)         : 116238
 
 Assembly
-  Method selected   : Hierholzer (Eulerian)
-  Dijkstra length   : 21 bp
-  Hierholzer length : 21 bp
-  Final length      : 21 bp
-  GC content        : 57.14 %
-  N50               : 21 bp
+  Method selected   : Greedy (multi-start)
+  Dijkstra length   : 31 bp
+  Hierholzer length : 238 bp
+  Final length      : 499 bp
+  GC content        : 52.91 %
+  N50               : 499 bp
 
 Repeat Analysis (Suffix Array + LCP)
-  Min repeat length : 21 bp
-  Repeat regions    : 0
+  Min repeat length : 19 bp
+  Repeat regions    : 4
+  Longest repeat    : 22 bp (2x)
 
 Time Complexity (Theoretical)
   Rolling Hash      : O(N)           one slide per character
-  Bloom Filter      : O(N)           constant insert/query
+  Freq Counter      : O(N)           exact unordered_map count
   Graph Build       : O(V + E)       adjacency list
   Dijkstra          : O((V+E) log V) min-heap relaxation
   Hierholzer        : O(E)            each edge visited once
@@ -34,10 +36,10 @@ Time Complexity (Theoretical)
   Overall           : O(N + (V+E) log V + n log² n)
 
 Execution Time (Measured)
-  Total             : 4037.21 ms
-  Hashing           : 550.48 ms
-  Graph Build       : 2771.54 ms
-  Dijkstra          : 332.95 ms
-  Hierholzer        : 295.12 ms
+  Total             : 2392.02 ms
+  Hashing           : 873.67 ms
+  Graph Build       : 1271.41 ms
+  Dijkstra          : 57.88 ms
+  Hierholzer        : 43.45 ms
   DP Correction     : 0.00 ms
-  Suffix Array+LCP  : 0.04 ms
+  Suffix Array+LCP  : 0.07 ms

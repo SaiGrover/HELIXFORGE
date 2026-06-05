@@ -18,9 +18,26 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-BASE_DIR   = Path(__file__).parent
-ASSEMBLER  = BASE_DIR / ("assembler.exe" if (BASE_DIR / "assembler.exe").exists() else "assembler")
+BASE_DIR = Path(__file__).parent
+ASSEMBLER = BASE_DIR / "assembler"
 OUTPUT_DIR = BASE_DIR / "output"
+
+import os
+
+if not ASSEMBLER.exists():
+    subprocess.run(
+        [
+            "g++",
+            "-O2",
+            "-std=c++17",
+            str(BASE_DIR / "assembler_standalone.cpp"),
+            "-o",
+            str(ASSEMBLER)
+        ],
+        check=True
+    )
+
+    os.chmod(ASSEMBLER, 0o755)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GLOBAL CSS — Cyberpunk Biopunk theme
